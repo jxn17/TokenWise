@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TokenWise</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon" aria-hidden="true">📊</span>
+        <h1>TokenWise</h1>
+      </div>
+      <div id="health-badge" class="health-badge health-fresh">🟢 Fresh</div>
+    </header>
+
+    <section class="stats-grid" aria-label="Session statistics">
+      <div class="stat-card">
+        <span class="stat-label">Session tokens</span>
+        <span id="session-tokens" class="stat-value">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Messages sent</span>
+        <span id="message-count" class="stat-value">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Avg / message</span>
+        <span id="avg-tokens" class="stat-value">0</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Est. savings</span>
+        <span id="est-savings" class="stat-value savings">0</span>
+      </div>
+    </section>
+
+    <section class="chart-section" aria-label="Per-message token history">
+      <h2 class="section-title">Token history</h2>
+      <div id="mini-chart" class="mini-chart" role="img" aria-label="Per-message token bar chart"></div>
+      <p id="chart-empty" class="chart-empty">No active conversation data yet.</p>
+    </section>
+
+    <section class="settings" aria-label="Settings">
+      <h2 class="section-title">Settings</h2>
+
+      <label class="setting-row">
+        <span>Show floating widget</span>
+        <input type="checkbox" id="toggle-widget" checked>
+        <span class="toggle" aria-hidden="true"></span>
+      </label>
+
+      <label class="setting-row">
+        <span>Show suggestions</span>
+        <input type="checkbox" id="toggle-suggestions" checked>
+        <span class="toggle" aria-hidden="true"></span>
+      </label>
+
+      <label class="setting-row select-row">
+        <span>Default model</span>
+        <select id="default-model">
+          <option value="gpt-4o">GPT-4o</option>
+          <option value="gpt-4">GPT-4</option>
+          <option value="gpt-4-turbo">GPT-4 Turbo</option>
+          <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+          <option value="claude-sonnet">Claude Sonnet</option>
+          <option value="claude-opus">Claude Opus</option>
+          <option value="claude-haiku">Claude Haiku</option>
+          <option value="gemini-pro">Gemini Pro</option>
+          <option value="gemini-flash">Gemini Flash</option>
+          <option value="gemini-ultra">Gemini Ultra</option>
+        </select>
+      </label>
+    </section>
+
+    <footer class="footer">
+      <button id="btn-analytics" class="btn-primary" type="button">View Analytics</button>
+      <p class="privacy-note">All data stays local. Nothing is sent to external servers.</p>
+    </footer>
+  </div>
+
+  <script src="/dist/popup/popup.js"></script>
+</body>
+</html>

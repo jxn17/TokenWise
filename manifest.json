@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "TokenWise",
+  "version": "1.0.0",
+  "description": "Real-time token usage monitor and optimizer for AI chat interfaces. Track, analyze, and reduce your token consumption across ChatGPT, Claude, and Gemini.",
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+
+  "background": {
+    "service_worker": "dist/background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "js": ["dist/content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*", "https://www.claude.ai/*"],
+      "js": ["dist/content/claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["dist/content/gemini.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "src/assets/icons/icon-16.png",
+      "32": "src/assets/icons/icon-32.png",
+      "48": "src/assets/icons/icon-48.png",
+      "128": "src/assets/icons/icon-128.png"
+    }
+  },
+
+  "icons": {
+    "16": "src/assets/icons/icon-16.png",
+    "32": "src/assets/icons/icon-32.png",
+    "48": "src/assets/icons/icon-48.png",
+    "128": "src/assets/icons/icon-128.png"
+  },
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none';"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["src/assets/icons/*"],
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://www.claude.ai/*",
+        "https://gemini.google.com/*"
+      ]
+    }
+  ]
+}

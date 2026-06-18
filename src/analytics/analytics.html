@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TokenWise Analytics</title>
+  <link rel="stylesheet" href="analytics.css">
+</head>
+<body>
+  <div class="analytics-page">
+    <header class="page-header">
+      <div class="header-content">
+        <span class="logo-icon" aria-hidden="true">📊</span>
+        <h1>TokenWise Analytics</h1>
+      </div>
+      <p class="subtitle">Local usage insights — nothing leaves your browser</p>
+    </header>
+
+    <main class="main-content">
+      <section class="summary-cards" aria-label="Summary statistics">
+        <div class="summary-card">
+          <span class="card-label">7-day tokens</span>
+          <span id="total-7day" class="card-value">0</span>
+        </div>
+        <div class="summary-card">
+          <span class="card-label">Total messages</span>
+          <span id="total-messages" class="card-value">0</span>
+        </div>
+        <div class="summary-card savings">
+          <span class="card-label">Estimated savings</span>
+          <span id="total-savings" class="card-value">0</span>
+        </div>
+        <div class="summary-card">
+          <span class="card-label">Sessions (7d)</span>
+          <span id="total-sessions" class="card-value">0</span>
+        </div>
+      </section>
+
+      <section class="chart-card" aria-label="7-day token usage chart">
+        <h2 class="section-title">Daily token usage (7 days)</h2>
+        <div class="chart-container">
+          <canvas id="daily-chart" role="img" aria-label="Bar chart of daily token usage"></canvas>
+        </div>
+      </section>
+
+      <div class="charts-row">
+        <section class="chart-card half" aria-label="Site breakdown chart">
+          <h2 class="section-title">Usage by site</h2>
+          <div class="chart-container pie-container">
+            <canvas id="site-chart" role="img" aria-label="Pie chart of token usage by site"></canvas>
+          </div>
+        </section>
+
+        <section class="chart-card half" aria-label="Savings report">
+          <h2 class="section-title">Savings report</h2>
+          <div id="savings-report" class="savings-report">
+            <p class="savings-highlight">
+              You've saved an estimated <strong id="savings-highlight-value">0</strong> tokens
+              by applying TokenWise suggestions.
+            </p>
+            <ul id="savings-breakdown" class="savings-breakdown"></ul>
+          </div>
+        </section>
+      </div>
+
+      <section class="data-management" aria-label="Data management">
+        <h2 class="section-title">Data management</h2>
+        <p class="data-note">
+          All data is stored locally in your browser. You can clear it at any time.
+          History is automatically capped at 90 days.
+        </p>
+        <button id="btn-clear" class="btn-danger" type="button">Clear all data</button>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <p>All data stays local. Nothing is sent to external servers.</p>
+    </footer>
+  </div>
+
+  <script src="/dist/analytics/analytics.js"></script>
+</body>
+</html>

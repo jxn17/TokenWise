@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to TokenWise</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: #0a0a14;
+      color: #e0e0e8;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .welcome {
+      max-width: 560px;
+      width: 100%;
+    }
+
+    .welcome-header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    .welcome-header h1 {
+      font-size: 32px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #a5b4fc, #818cf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    .welcome-header p {
+      color: #8888a8;
+      font-size: 15px;
+    }
+
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .step {
+      background: linear-gradient(135deg, #1a1a2e 0%, #22223a 100%);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: none;
+    }
+
+    .step.active {
+      display: block;
+    }
+
+    .step-number {
+      display: inline-block;
+      width: 28px;
+      height: 28px;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 50%;
+      text-align: center;
+      line-height: 26px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #a5b4fc;
+      margin-bottom: 12px;
+    }
+
+    .step h2 {
+      font-size: 18px;
+      margin-bottom: 8px;
+      color: #e0e0e8;
+    }
+
+    .step p {
+      color: #a0a0b8;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .step ul {
+      margin-top: 12px;
+      padding-left: 20px;
+      color: #a0a0b8;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .sites {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+
+    .site-badge {
+      padding: 6px 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      font-size: 13px;
+      color: #c0c0d8;
+    }
+
+    .progress {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.2s;
+    }
+
+    .dot.active {
+      background: #6366f1;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s;
+    }
+
+    .btn:hover {
+      opacity: 0.9;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: #a0a0b8;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .btn-secondary.hidden {
+      visibility: hidden;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #818cf8);
+      color: #fff;
+      margin-left: auto;
+    }
+
+    .privacy {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="welcome">
+    <header class="welcome-header">
+      <div class="logo" aria-hidden="true">📊</div>
+      <h1>Welcome to TokenWise</h1>
+      <p>Monitor and reduce your AI token usage — 100% locally</p>
+    </header>
+
+    <div class="progress" role="tablist" aria-label="Tutorial progress">
+      <span class="dot active" data-step="0" aria-hidden="true"></span>
+      <span class="dot" data-step="1" aria-hidden="true"></span>
+      <span class="dot" data-step="2" aria-hidden="true"></span>
+    </div>
+
+    <div class="steps">
+      <section class="step active" id="step-0" role="tabpanel">
+        <span class="step-number">1</span>
+        <h2>Real-time token tracking</h2>
+        <p>
+          TokenWise adds a floating widget to your AI chat pages. It counts tokens
+          as you type and shows your full conversation cost — so you always know
+          what you're about to send.
+        </p>
+        <div class="sites">
+          <span class="site-badge">ChatGPT</span>
+          <span class="site-badge">Claude</span>
+          <span class="site-badge">Gemini</span>
+        </div>
+      </section>
+
+      <section class="step" id="step-1" role="tabpanel">
+        <span class="step-number">2</span>
+        <h2>Smart optimization suggestions</h2>
+        <p>
+          As you write prompts, TokenWise analyzes your text locally and suggests
+          ways to cut filler, redundancy, and formatting waste — with one-click
+          Apply buttons and estimated token savings.
+        </p>
+        <ul>
+          <li>Detects polite filler and verbose phrasing</li>
+          <li>Flags duplicate instructions</li>
+          <li>Estimates cost for file attachments and pasted URLs</li>
+        </ul>
+      </section>
+
+      <section class="step" id="step-2" role="tabpanel">
+        <span class="step-number">3</span>
+        <h2>Your data never leaves your browser</h2>
+        <p>
+          TokenWise makes zero network requests. No telemetry, no cloud sync,
+          no data exfiltration. Everything is stored in chrome.storage.local on
+          your device and can be cleared anytime from Analytics.
+        </p>
+        <ul>
+          <li>Open the extension popup for session stats and settings</li>
+          <li>View Analytics for 7-day charts and savings reports</li>
+          <li>Drag the widget to reposition it; dismiss with ×</li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="actions">
+      <button id="btn-back" class="btn btn-secondary hidden" type="button">Back</button>
+      <button id="btn-next" class="btn btn-primary" type="button">Next</button>
+    </div>
+
+    <p class="privacy">All data stays local. Nothing is sent to external servers.</p>
+  </div>
+
+  <script src="welcome.js"></script>
+</body>
+</html>
