@@ -10,6 +10,8 @@ import { countTokens, estimateConversationTokens, type ModelType, type Message }
 import { createSuggestionPanelController, type SuggestionPanelController } from '../utils/suggestion-panel';
 import { renderWidgetBody } from '../utils/widget-ui';
 import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
+import { reportError } from '../utils/error-reporter';
+import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -62,18 +64,50 @@ import {
         initSuggestionPanel();
       }
 
-      await waitForElement(CONFIG.inputSelector, 10000);
+      // Wait for input element with error handling
+      try {
+        await waitForElement(CONFIG.inputSelector, 10000);
+      } catch (e) {
+        await reportError(
+          SITE,
+          'INPUT_ELEMENT_NOT_FOUND',
+          'Could not find input element after 10 seconds',
+          `Selector: ${CONFIG.inputSelector}`,
+          e instanceof Error ? e : undefined
+        );
+        showErrorInWidget('Input element not found. Extension may not work correctly.');
+        return;
+      }
 
-      setupInputObserver();
-      setupChatObserver();
-      setupFileDetection();
-      setupPasteDetection();
-      scanConversation();
+      // Setup observers with error handling
+      try {
+        setupInputObserver();
+        setupChatObserver();
+        setupFileDetection();
+        setupPasteDetection();
+        scanConversation();
+      } catch (e) {
+        await reportError(
+          SITE,
+          'OBSERVER_SETUP_FAILED',
+          'Failed to set up DOM observers',
+          undefined,
+          e instanceof Error ? e : undefined
+        );
+      }
 
       sendUpdate();
       setupStorageListener();
-    } catch {
-      // Fail silently if initialization fails (DOM might have changed)
+      setupHeartbeat();
+    } catch (e) {
+      await reportError(
+        SITE,
+        'INIT_FAILED',
+        'Failed to initialize content script',
+        undefined,
+        e instanceof Error ? e : undefined
+      );
+      showErrorInWidget('Extension initialization failed.');
     }
   }
 
@@ -620,6 +654,34 @@ import {
   }
 
   // ── Utilities ─────────────────────────────────────────────────
+
+  /**
+   * Display error message in the widget
+   */
+  function showErrorInWidget(message: string): void {
+    if (!widgetElement) return;
+    
+    const errorEl = document.createElement('div');
+    errorEl.style.cssText = 'color: #ff6b6b; padding: 8px; font-size: 12px; border-top: 1px solid #3a3a52;';
+    errorEl.textContent = '⚠️ ' + message;
+    widgetElement.appendChild(errorEl);
+  }
+
+  /**
+   * Setup heartbeat to report health status
+   */
+  function setupHeartbeat(): void {
+    setInterval(async () => {
+      try {
+        await chrome.runtime.sendMessage({
+          type: 'HEARTBEAT',
+          data: { site: SITE },
+        });
+      } catch {
+        // Messaging failed, don't retry
+      }
+    }, 5000);
+  }
 
   function debounce(fn: () => void, delay: number): () => void {
     let timer: ReturnType<typeof setTimeout> | null = null;

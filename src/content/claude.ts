@@ -7,10 +7,11 @@
  */
 
 import { countTokens, estimateConversationTokens, type ModelType, type Message } from '../utils/tokenizer';
-import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
-import { createSuggestionPanelController } from '../utils/suggestion-panel';
+import { createSuggestionPanelController, type SuggestionPanelController } from '../utils/suggestion-panel';
 import { renderWidgetBody } from '../utils/widget-ui';
-import type { ExportMessage } from '../utils/context-exporter';
+import { estimateFileTokens, detectURLs, type FileEstimate } from '../utils/media-estimator';
+import { reportError } from '../utils/error-reporter';
+import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -18,8 +19,8 @@ import {
   safeQuerySelectorAll,
   getInputText,
   setInputText,
-  extractClaudeMessages,
-  findComposerInput,
+  positionPanelAboveElement,
+  extractMessages,
   type DebouncedObserver,
 } from '../utils/dom-monitor';
 
