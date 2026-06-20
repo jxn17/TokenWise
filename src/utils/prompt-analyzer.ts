@@ -85,11 +85,35 @@ const FILLER_PATTERNS: FillerPattern[] = [
   { pattern: /\bthank you in advance[.!]?\s*/gi, replacement: '', label: 'Polite filler' },
 ];
 
+const GENZ_FILLER_PATTERNS: FillerPattern[] = [
+  // Discourse marker "like" — detect "like" when used as filler, not as "would like to" or "like this"
+  { pattern: /\b(?:,\s*)?like(?:,\s*)?\b(?!\s+(?:this|that|a|an|the|to|it|so)\b)/gi, replacement: '', label: 'Filler "like"' },
+  { pattern: /\bngl\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\btbh\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\bidk\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\bimo\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\bimho\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\blowkey\b[,.]?\s*/gi, replacement: '', label: 'Hedge filler' },
+  { pattern: /\bhighkey\b[,.]?\s*/gi, replacement: '', label: 'Hedge filler' },
+  { pattern: /\blmk\b[,.]?\s*/gi, replacement: '', label: 'Abbreviation filler' },
+  { pattern: /\bfr\b[,.]?\s*/gi, replacement: '', label: 'Emphasis filler' },
+  { pattern: /\bno cap\b[,.]?\s*/gi, replacement: '', label: 'Emphasis filler' },
+  { pattern: /\bkinda\b/gi, replacement: '', label: 'Casual hedge' },
+  { pattern: /\bsorta\b/gi, replacement: '', label: 'Casual hedge' },
+  { pattern: /\bi mean\b[,.]?\s*/gi, replacement: '', label: 'Discourse marker' },
+  { pattern: /\byou know\b[,.]?\s*/gi, replacement: '', label: 'Discourse marker' },
+  { pattern: /\bso like\b[,.]?\s*/gi, replacement: '', label: 'Combined filler' },
+  { pattern: /\blike literally\b[,.]?\s*/gi, replacement: '', label: 'Combined filler' },
+  { pattern: /\blol\b[,.]?\s*/gi, replacement: '', label: 'Reaction filler' },
+  { pattern: /\blmao\b[,.]?\s*/gi, replacement: '', label: 'Reaction filler' },
+];
+
 const WEAK_WORDS = [
   'very', 'really', 'just', 'quite', 'rather', 'somewhat', 'literally',
   'simply', 'perhaps', 'maybe', 'possibly', 'certainly', 'definitely',
   'absolutely', 'completely', 'totally', 'entirely', 'honestly', 'frankly',
-  'obviously', 'clearly', 'needless to say',
+  'obviously', 'clearly', 'needless to say', 'lowkey', 'highkey', 'kinda',
+  'sorta', 'deadass'
 ];
 
 // ── Analysis Functions ────────────────────────────────────────────
@@ -125,7 +149,9 @@ export function analyzePrompt(text: string): Suggestion[] {
 function detectFillerPhrases(text: string): Suggestion[] {
   const suggestions: Suggestion[] = [];
 
-  for (const { pattern, replacement, label } of FILLER_PATTERNS) {
+  const allPatterns = [...FILLER_PATTERNS, ...GENZ_FILLER_PATTERNS];
+
+  for (const { pattern, replacement, label } of allPatterns) {
     pattern.lastIndex = 0;
     const matches = text.match(pattern);
 

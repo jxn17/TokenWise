@@ -7,7 +7,8 @@
  */
 
 import { countTokens, estimateConversationTokens, type ModelType, type Message } from '../utils/tokenizer';
-import { analyzePrompt, applySuggestion, getTotalSavings, type Suggestion } from '../utils/prompt-analyzer';
+import { createSuggestionPanelController, type SuggestionPanelController } from '../utils/suggestion-panel';
+import { renderWidgetBody } from '../utils/widget-ui';
 import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
 import {
   SITE_CONFIGS,
@@ -31,7 +32,8 @@ import {
   let inputObserver: DebouncedObserver | null = null;
   let chatObserver: DebouncedObserver | null = null;
   let widgetElement: HTMLElement | null = null;
-  let suggestionPanel: HTMLElement | null = null;
+  let suggestionPanel: SuggestionPanelController | null = null;
+  let currentAttachments: FileEstimate[] = [];
   let currentInputTokens = 0;
   let conversationTokens = 0;
   let messageCount = 0;
@@ -57,7 +59,7 @@ import {
 
       createWidget();
       if (showSuggestions) {
-        createSuggestionPanel();
+        initSuggestionPanel();
       }
 
       await waitForElement(CONFIG.inputSelector, 10000);
@@ -143,92 +145,16 @@ import {
 
     // Remove existing content nodes but keep dismiss button
     const dismissBtn = widgetElement.querySelector('button');
-    while (widgetElement.firstChild) {
-      if (widgetElement.firstChild === dismissBtn) break;
-      widgetElement.removeChild(widgetElement.firstChild);
-    }
-
-    // Header
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '6px',
-      marginBottom: '8px',
-      fontWeight: '600',
-      fontSize: '11px',
-      textTransform: 'uppercase',
-      letterSpacing: '0.5px',
-      color: '#a0a0b8',
+    
+    renderWidgetBody(widgetElement, dismissBtn, {
+      siteLabel: 'ChatGPT',
+      inputTokens,
+      totalTokens,
+      warningThreshold: 8000,
+      criticalThreshold: 30000,
+      getMessages: () => extractMessages(CONFIG),
+      contextExportMaxTokens: 5000,
     });
-    header.textContent = '📊 TokenWise';
-    widgetElement.insertBefore(header, widgetElement.firstChild);
-
-    // Current message tokens
-    const inputLine = document.createElement('div');
-    Object.assign(inputLine.style, { display: 'flex', justifyContent: 'space-between', marginBottom: '4px' });
-    const inputLabel = document.createElement('span');
-    inputLabel.textContent = 'Current message:';
-    inputLabel.style.color = '#8888a8';
-    const inputValue = document.createElement('span');
-    inputValue.textContent = `~${inputTokens.toLocaleString()} tokens`;
-    inputValue.style.fontWeight = '600';
-    inputValue.style.color = getTokenColor(inputTokens);
-    inputLine.appendChild(inputLabel);
-    inputLine.appendChild(inputValue);
-    widgetElement.insertBefore(inputLine, dismissBtn);
-
-    // Conversation total
-    const totalLine = document.createElement('div');
-    Object.assign(totalLine.style, { display: 'flex', justifyContent: 'space-between', marginBottom: '4px' });
-    const totalLabel = document.createElement('span');
-    totalLabel.textContent = 'Full request cost:';
-    totalLabel.style.color = '#8888a8';
-    const totalValue = document.createElement('span');
-    totalValue.textContent = `~${totalTokens.toLocaleString()} tokens`;
-    totalValue.style.fontWeight = '600';
-    totalValue.style.color = getTokenColor(totalTokens);
-    totalLine.appendChild(totalLabel);
-    totalLine.appendChild(totalValue);
-    widgetElement.insertBefore(totalLine, dismissBtn);
-
-    // Warning/nudge if conversation is long
-    const warningThreshold = 8000;
-    const criticalThreshold = 30000;
-
-    if (totalTokens > criticalThreshold) {
-      const warning = document.createElement('div');
-      Object.assign(warning.style, {
-        marginTop: '8px',
-        padding: '6px 8px',
-        borderRadius: '6px',
-        background: 'rgba(239,68,68,0.15)',
-        border: '1px solid rgba(239,68,68,0.3)',
-        fontSize: '11px',
-        color: '#fca5a5',
-      });
-      warning.textContent = `🔴 Very expensive conversation. A new chat would save ~${(totalTokens - 100).toLocaleString()} tokens.`;
-      widgetElement.insertBefore(warning, dismissBtn);
-    } else if (totalTokens > warningThreshold) {
-      const warning = document.createElement('div');
-      Object.assign(warning.style, {
-        marginTop: '8px',
-        padding: '6px 8px',
-        borderRadius: '6px',
-        background: 'rgba(234,179,8,0.15)',
-        border: '1px solid rgba(234,179,8,0.3)',
-        fontSize: '11px',
-        color: '#fde68a',
-      });
-      warning.textContent = '🟡 Conversation is getting long. Consider starting a new chat soon.';
-      widgetElement.insertBefore(warning, dismissBtn);
-    }
-  }
-
-  function getTokenColor(tokens: number): string {
-    if (tokens < 500) return '#4ade80';  // green
-    if (tokens <= 2000) return '#facc15'; // yellow
-    return '#f87171'; // red
   }
 
   // ── Widget Drag ───────────────────────────────────────────────
@@ -301,6 +227,7 @@ import {
     if (widgetElement) {
       widgetElement.style.display = 'none';
     }
+    widgetVisible = false;
     try {
       chrome.storage.local.set({ widgetVisible: false });
     } catch {
@@ -310,170 +237,36 @@ import {
 
   // ── Suggestion Panel ──────────────────────────────────────────
 
-  function createSuggestionPanel(): void {
+  function initSuggestionPanel(): void {
     if (suggestionPanel) return;
 
-    suggestionPanel = document.createElement('div');
-    suggestionPanel.id = 'tokenwise-suggestions';
-    suggestionPanel.setAttribute('data-tokenwise', 'true');
-
-    Object.assign(suggestionPanel.style, {
-      position: 'fixed',
-      bottom: '120px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      zIndex: '2147483646',
-      background: 'linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%)',
-      borderRadius: '12px',
-      padding: '0',
-      color: '#e0e0e0',
-      fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
-      fontSize: '12px',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)',
-      maxWidth: '500px',
-      width: '90%',
-      maxHeight: '200px',
-      overflowY: 'auto',
-      display: 'none',
-      backdropFilter: 'blur(20px)',
-    });
-
-    document.body.appendChild(suggestionPanel);
-  }
-
-  function updateSuggestions(text: string, inputEl?: Element | null): void {
-    if (!suggestionPanel || !showSuggestions) return;
-
-    const suggestions = analyzePrompt(text);
-
-    if (suggestions.length === 0) {
-      suggestionPanel.style.display = 'none';
-      return;
-    }
-
-    // Clear previous suggestions
-    while (suggestionPanel.firstChild) {
-      suggestionPanel.removeChild(suggestionPanel.firstChild);
-    }
-
-    // Header
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      padding: '10px 14px 6px',
-      fontWeight: '600',
-      fontSize: '11px',
-      textTransform: 'uppercase',
-      letterSpacing: '0.5px',
-      color: '#a0a0b8',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-    });
-    const headerText = document.createElement('span');
-    headerText.textContent = `💡 Save ~${getTotalSavings(suggestions)} tokens`;
-    header.appendChild(headerText);
-
-    const collapseBtn = document.createElement('button');
-    collapseBtn.textContent = '▼';
-    Object.assign(collapseBtn.style, {
-      background: 'none',
-      border: 'none',
-      color: '#888',
-      cursor: 'pointer',
-      fontSize: '10px',
-    });
-    collapseBtn.addEventListener('click', () => {
-      suggestionPanel!.style.display = 'none';
-    });
-    header.appendChild(collapseBtn);
-    suggestionPanel.appendChild(header);
-
-    // Show top 3 suggestions
-    const topSuggestions = suggestions.slice(0, 3);
-    for (const suggestion of topSuggestions) {
-      const item = createSuggestionItem(suggestion);
-      suggestionPanel.appendChild(item);
-    }
-
-    suggestionPanel.style.display = 'block';
-    positionPanelAboveElement(
-      suggestionPanel,
-      inputEl || safeQuerySelector(CONFIG.inputSelector)
-    );
-  }
-
-  function createSuggestionItem(suggestion: Suggestion): HTMLElement {
-    const item = document.createElement('div');
-    Object.assign(item.style, {
-      padding: '8px 14px',
-      borderTop: '1px solid rgba(255,255,255,0.06)',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      gap: '10px',
-    });
-
-    const textDiv = document.createElement('div');
-    textDiv.style.flex = '1';
-
-    const msg = document.createElement('div');
-    msg.textContent = suggestion.message;
-    msg.style.color = '#c0c0d8';
-    msg.style.marginBottom = '2px';
-    textDiv.appendChild(msg);
-
-    const savings = document.createElement('div');
-    savings.textContent = `Save ~${suggestion.tokenSavings} tokens`;
-    savings.style.color = '#4ade80';
-    savings.style.fontSize = '11px';
-    textDiv.appendChild(savings);
-    item.appendChild(textDiv);
-
-    if (suggestion.originalText) {
-      const applyBtn = document.createElement('button');
-      applyBtn.textContent = 'Apply';
-      Object.assign(applyBtn.style, {
-        background: 'rgba(99,102,241,0.2)',
-        border: '1px solid rgba(99,102,241,0.4)',
-        color: '#a5b4fc',
-        borderRadius: '6px',
-        padding: '4px 10px',
-        cursor: 'pointer',
-        fontSize: '11px',
-        fontWeight: '500',
-        whiteSpace: 'nowrap',
-      });
-      applyBtn.addEventListener('click', () => {
-        applyPromptSuggestion(suggestion);
-      });
-      item.appendChild(applyBtn);
-    }
-
-    return item;
-  }
-
-  function applyPromptSuggestion(suggestion: Suggestion): void {
-    try {
-      const inputEl = safeQuerySelector(CONFIG.inputSelector);
-      if (!inputEl) return;
-
-      const currentText = getInputText(inputEl);
-      const newText = applySuggestion(currentText, suggestion);
-
-      setInputText(inputEl, newText);
-      handleInputChange();
-
-      // Track savings
-      try {
-        chrome.runtime.sendMessage({
-          type: 'SAVINGS_TRACKED',
-          data: { tokens: suggestion.tokenSavings },
-        });
-      } catch {
-        // Ignore message errors
+    suggestionPanel = createSuggestionPanelController({
+      getInputElement: () => safeQuerySelector(CONFIG.inputSelector),
+      getInputText: () => {
+        const el = safeQuerySelector(CONFIG.inputSelector);
+        return el ? getInputText(el) : '';
+      },
+      setInputText: (element: Element, text: string) => {
+        setInputText(element, text);
+        handleInputChange();
+      },
+      onAfterApply: () => {
+        // Any post-apply logic
+      },
+      trackSavings: (tokens: number) => {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'SAVINGS_TRACKED',
+            data: { tokens },
+          });
+        } catch {
+          // Ignore
+        }
       }
-    } catch {
-      // Fail silently
+    }, () => showSuggestions);
+
+    if (showSuggestions) {
+      suggestionPanel.create();
     }
   }
 
@@ -511,9 +304,9 @@ import {
 
       // Update suggestions
       if (showSuggestions && text.trim().length >= 8) {
-        updateSuggestions(text, inputEl);
+        suggestionPanel?.update(text, currentAttachments);
       } else if (suggestionPanel) {
-        suggestionPanel.style.display = 'none';
+        suggestionPanel.hide();
       }
 
       // Send update to service worker
@@ -577,20 +370,42 @@ import {
     try {
       const attachments = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
       attachmentCount = attachments.length;
+      
+      const estimates: FileEstimate[] = [];
 
       for (const el of attachments) {
-        // Skip already-processed attachments
-        if (el.getAttribute('data-tokenwise-processed')) continue;
-        el.setAttribute('data-tokenwise-processed', 'true');
-
         // Extract metadata from DOM attributes
-        const fileName = el.getAttribute('data-filename')
-          || el.getAttribute('title')
-          || el.textContent?.trim().slice(0, 100)
-          || 'unknown';
-
-        const fileSize = parseInt(el.getAttribute('data-filesize') || '0', 10);
+        let fileName = el.getAttribute('data-filename') || el.getAttribute('title');
+        let fileSizeStr = el.getAttribute('data-filesize') || '';
         const fileType = el.getAttribute('data-filetype') || '';
+
+        // Fallback to textContent parsing if attributes are missing
+        if (!fileName || !fileSizeStr) {
+          const text = el.textContent?.trim() || '';
+          
+          // Try to extract filename (e.g. anything with an extension)
+          const nameMatch = text.match(/[\w\s-]+\.[a-zA-Z0-9]{2,4}\b/);
+          if (!fileName && nameMatch) {
+            fileName = nameMatch[0];
+          }
+
+          // Try to extract file size (e.g. 12.4 KB, 1.2 MB)
+          const sizeMatch = text.match(/(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)/i);
+          if (!fileSizeStr && sizeMatch) {
+            const val = parseFloat(sizeMatch[1]);
+            const unit = sizeMatch[2].toUpperCase();
+            if (unit === 'KB') fileSizeStr = String(val * 1024);
+            else if (unit === 'MB') fileSizeStr = String(val * 1024 * 1024);
+            else if (unit === 'GB') fileSizeStr = String(val * 1024 * 1024 * 1024);
+            else fileSizeStr = String(val);
+          }
+
+          if (!fileName) {
+            fileName = text.slice(0, 50) || 'unknown';
+          }
+        }
+
+        const fileSize = parseInt(fileSizeStr || '0', 10);
 
         // Get image dimensions if available
         const img = el.querySelector('img');
@@ -598,9 +413,22 @@ import {
         const imageHeight = img?.naturalHeight || 0;
 
         const estimate = estimateFileTokens(fileName, fileSize, fileType, imageWidth, imageHeight);
+        estimates.push(estimate);
+
+        // Skip already-processed attachments for tooltip creation
+        if (el.getAttribute('data-tokenwise-processed')) continue;
+        el.setAttribute('data-tokenwise-processed', 'true');
 
         // Create tooltip
         addFileTooltip(el, estimate);
+      }
+      
+      currentAttachments = estimates;
+      
+      if (showSuggestions && suggestionPanel) {
+        const inputEl = safeQuerySelector(CONFIG.inputSelector);
+        const text = inputEl ? getInputText(inputEl) : '';
+        suggestionPanel.update(text, currentAttachments);
       }
     } catch {
       // Fail silently
@@ -766,16 +594,25 @@ import {
     try {
       if (settings.showWidget === false) {
         hideWidget();
-      } else if (settings.showWidget === true && widgetElement) {
-        widgetElement.style.display = 'block';
+      } else if (settings.showWidget === true) {
+        widgetVisible = true;
+        if (widgetElement) {
+          widgetElement.style.display = 'block';
+        } else {
+          createWidget();
+        }
       }
 
       if (settings.showSuggestions === false) {
         showSuggestions = false;
-        if (suggestionPanel) suggestionPanel.style.display = 'none';
+        if (suggestionPanel) suggestionPanel.hide();
       } else if (settings.showSuggestions === true) {
         showSuggestions = true;
-        if (!suggestionPanel) createSuggestionPanel();
+        if (!suggestionPanel) {
+          initSuggestionPanel();
+        } else {
+          suggestionPanel.create();
+        }
       }
     } catch {
       // Fail silently

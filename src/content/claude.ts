@@ -294,6 +294,7 @@ import {
 
   function hideWidget(): void {
     if (widgetElement) widgetElement.style.display = 'none';
+    widgetVisible = false;
     try { chrome.storage.local.set({ widgetVisible: false }); } catch { /* ignore */ }
   }
 
@@ -361,15 +362,54 @@ import {
     try {
       const attachments = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
       attachmentCount = attachments.length;
+      const estimates: FileEstimate[] = [];
+
       for (const el of attachments) {
-        if (el.getAttribute('data-tokenwise-processed')) continue;
-        el.setAttribute('data-tokenwise-processed', 'true');
-        const fileName = el.getAttribute('data-filename') || el.getAttribute('title') || el.textContent?.trim().slice(0, 100) || 'unknown';
-        const fileSize = parseInt(el.getAttribute('data-filesize') || '0', 10);
+        let fileName = el.getAttribute('data-filename') || el.getAttribute('title');
+        let fileSizeStr = el.getAttribute('data-filesize') || '';
         const fileType = el.getAttribute('data-filetype') || '';
+
+        // Fallback to textContent parsing if attributes are missing
+        if (!fileName || !fileSizeStr) {
+          const text = el.textContent?.trim() || '';
+          
+          // Try to extract filename (e.g. anything with an extension)
+          const nameMatch = text.match(/[\w\s-]+\.[a-zA-Z0-9]{2,4}\b/);
+          if (!fileName && nameMatch) {
+            fileName = nameMatch[0];
+          }
+
+          // Try to extract file size (e.g. 12.4 KB, 1.2 MB)
+          const sizeMatch = text.match(/(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)/i);
+          if (!fileSizeStr && sizeMatch) {
+            const val = parseFloat(sizeMatch[1]);
+            const unit = sizeMatch[2].toUpperCase();
+            if (unit === 'KB') fileSizeStr = String(val * 1024);
+            else if (unit === 'MB') fileSizeStr = String(val * 1024 * 1024);
+            else if (unit === 'GB') fileSizeStr = String(val * 1024 * 1024 * 1024);
+            else fileSizeStr = String(val);
+          }
+
+          if (!fileName) {
+            fileName = text.slice(0, 50) || 'unknown';
+          }
+        }
+
+        const fileSize = parseInt(fileSizeStr || '0', 10);
         const img = el.querySelector('img');
         const estimate = estimateFileTokens(fileName, fileSize, fileType, img?.naturalWidth || 0, img?.naturalHeight || 0);
+        estimates.push(estimate);
+
+        if (el.getAttribute('data-tokenwise-processed')) continue;
+        el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
+      }
+
+      currentAttachments = estimates;
+      if (showSuggestions) {
+        const inputEl = findClaudeInput();
+        const text = inputEl ? getInputText(inputEl) : '';
+        suggestionPanel.update(text, currentAttachments);
       }
     } catch { /* fail silently */ }
   }
@@ -427,22 +467,34 @@ import {
         if (areaName !== 'local') return;
 
         if (changes.widgetVisible?.newValue === false) hideWidget();
-        else if (changes.widgetVisible?.newValue === true && widgetElement) {
-          widgetElement.style.display = 'block';
+        else if (changes.widgetVisible?.newValue === true) {
+          widgetVisible = true;
+          if (widgetElement) {
+            widgetElement.style.display = 'block';
+          } else {
+            createWidget();
+            bindToComposer();
+          }
         }
 
         if (changes.settings?.newValue) {
           const settings = changes.settings.newValue as Record<string, unknown>;
           if (settings.showWidget === false) hideWidget();
-          else if (settings.showWidget === true && widgetElement) {
-            widgetElement.style.display = 'block';
+          else if (settings.showWidget === true) {
+            widgetVisible = true;
+            if (widgetElement) {
+              widgetElement.style.display = 'block';
+            } else {
+              createWidget();
+              bindToComposer();
+            }
           }
           if (settings.showSuggestions === false) {
             showSuggestions = false;
-            if (suggestionPanel) suggestionPanel.style.display = 'none';
+            suggestionPanel.hide();
           } else if (settings.showSuggestions === true) {
             showSuggestions = true;
-            if (!suggestionPanel) createSuggestionPanel();
+            suggestionPanel.create();
           }
         }
       });
@@ -467,8 +519,19 @@ import {
       if (sender.id !== chrome.runtime.id) return;
       if (message.type === 'SETTINGS_CHANGED') {
         if (message.data.showWidget === false) hideWidget();
-        else if (message.data.showWidget === true && widgetElement) widgetElement.style.display = 'block';
-        if (message.data.showSuggestions === false && suggestionPanel) suggestionPanel.style.display = 'none';
+        else if (message.data.showWidget === true) {
+          widgetVisible = true;
+          if (widgetElement) {
+            widgetElement.style.display = 'block';
+          } else {
+            createWidget();
+            bindToComposer();
+          }
+        }
+        
+        if (message.data.showSuggestions === false) suggestionPanel.hide();
+        else if (message.data.showSuggestions === true) suggestionPanel.create();
+        
         sendResponse({ ok: true });
       } else if (message.type === 'GET_CURRENT_STATE') {
         sendResponse({ site: SITE, inputTokens: currentInputTokens, conversationTokens, messageCount, attachmentCount });

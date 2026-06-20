@@ -33,7 +33,7 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
     userRole: 'user',
     shadowDom: false,
     chatContainerSelector: '[role="presentation"] .flex.flex-col, main .flex.flex-col',
-    fileAttachmentSelector: '[data-testid="attachment"], .file-attachment, [class*="attachment"]',
+    fileAttachmentSelector: '[data-testid="attachment"], .file-attachment, [class*="attachment"], [class*="file-pill"], [class*="uploaded-file"]',
     hostname: 'chat.openai.com',
   },
 
@@ -45,7 +45,7 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
     userRole: 'human',
     shadowDom: false,
     chatContainerSelector: '[data-testid="conversation"], main, [class*="ConversationContent"], [class*="chat-content"]',
-    fileAttachmentSelector: '[data-testid="file-attachment"], [data-testid="attachment"], [class*="attachment"], [class*="Attachment"]',
+    fileAttachmentSelector: '[data-testid="file-thumbnail"], [data-testid="image-thumbnail"], [data-testid="file-attachment"], [data-testid="attachment"], [class*="attachment"], [class*="Attachment"], [class*="file-pill"], [class*="uploaded-file"]',
     hostname: 'claude.ai',
   },
 
@@ -483,6 +483,28 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   try {
+    // Strategy 1: Try to find conversation turns (each turn wraps a user or assistant message)
+    const turnSelectors = [
+      '[data-testid="user-turn"]',
+      '[data-testid="assistant-turn"]',
+      '.user-turn',
+      '.assistant-turn',
+    ];
+    const turns = document.querySelectorAll(turnSelectors.join(', '));
+    
+    if (turns.length > 0) {
+      const ordered = sortByDocumentOrder(Array.from(turns));
+      for (const turn of ordered) {
+        const isUser = turn.matches('[data-testid="user-turn"], .user-turn') 
+          || turn.querySelector('[data-testid="user-message"], .font-user-message') !== null;
+        const content = turn.textContent?.trim() || '';
+        if (!content) continue;
+        messages.push({ role: isUser ? 'user' : 'assistant', content });
+      }
+      if (messages.length > 0) return messages;
+    }
+
+    // Strategy 2: Fall back to existing selector-based approach
     const selector =
       '[data-testid="user-message"], .font-user-message, .font-claude-response, [data-testid="assistant-message"]';
     const candidates = dedupeNestedElements(Array.from(document.querySelectorAll(selector)));

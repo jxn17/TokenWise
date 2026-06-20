@@ -8,7 +8,8 @@
  */
 
 import { countTokens, estimateConversationTokens, type ModelType, type Message } from '../utils/tokenizer';
-import { analyzePrompt, applySuggestion, getTotalSavings, type Suggestion } from '../utils/prompt-analyzer';
+import { createSuggestionPanelController, type SuggestionPanelController } from '../utils/suggestion-panel';
+import { renderWidgetBody } from '../utils/widget-ui';
 import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
 import {
   SITE_CONFIGS,
@@ -31,7 +32,8 @@ import {
   let inputObserver: DebouncedObserver | null = null;
   let chatObserver: DebouncedObserver | null = null;
   let widgetElement: HTMLElement | null = null;
-  let suggestionPanel: HTMLElement | null = null;
+  let suggestionPanel: SuggestionPanelController | null = null;
+  let currentAttachments: FileEstimate[] = [];
   let currentInputTokens = 0;
   let conversationTokens = 0;
   let messageCount = 0;
@@ -55,7 +57,7 @@ import {
 
       createWidget();
       if (showSuggestions) {
-        createSuggestionPanel();
+        initSuggestionPanel();
       }
 
       await waitForGeminiInput(15000);
@@ -284,75 +286,26 @@ import {
     document.body.appendChild(widgetElement);
   }
 
+  function hideWidget(): void {
+    if (widgetElement) widgetElement.style.display = 'none';
+    widgetVisible = false;
+    try { chrome.storage.local.set({ widgetVisible: false }); } catch { /* ignore */ }
+  }
+
   function updateWidgetContent(inputTokens: number, totalTokens: number): void {
     if (!widgetElement) return;
 
     const dismissBtn = widgetElement.querySelector('button');
-    while (widgetElement.firstChild) {
-      if (widgetElement.firstChild === dismissBtn) break;
-      widgetElement.removeChild(widgetElement.firstChild);
-    }
-
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px',
-      fontWeight: '600', fontSize: '11px', textTransform: 'uppercase',
-      letterSpacing: '0.5px', color: '#a0a0b8',
+    
+    renderWidgetBody(widgetElement, dismissBtn, {
+      siteLabel: 'Gemini',
+      inputTokens,
+      totalTokens,
+      warningThreshold: 8000,
+      criticalThreshold: 30000,
+      getMessages: () => extractGeminiMessages(),
+      contextExportMaxTokens: 5000,
     });
-    header.textContent = '📊 TokenWise · Gemini';
-    widgetElement.insertBefore(header, widgetElement.firstChild);
-
-    const inputLine = document.createElement('div');
-    Object.assign(inputLine.style, { display: 'flex', justifyContent: 'space-between', marginBottom: '4px' });
-    const inputLabel = document.createElement('span');
-    inputLabel.textContent = 'Current message:';
-    inputLabel.style.color = '#8888a8';
-    const inputValue = document.createElement('span');
-    inputValue.textContent = `~${inputTokens.toLocaleString()} tokens`;
-    inputValue.style.fontWeight = '600';
-    inputValue.style.color = getTokenColor(inputTokens);
-    inputLine.appendChild(inputLabel);
-    inputLine.appendChild(inputValue);
-    widgetElement.insertBefore(inputLine, dismissBtn);
-
-    const totalLine = document.createElement('div');
-    Object.assign(totalLine.style, { display: 'flex', justifyContent: 'space-between', marginBottom: '4px' });
-    const totalLabel = document.createElement('span');
-    totalLabel.textContent = 'Full request cost:';
-    totalLabel.style.color = '#8888a8';
-    const totalValue = document.createElement('span');
-    totalValue.textContent = `~${totalTokens.toLocaleString()} tokens`;
-    totalValue.style.fontWeight = '600';
-    totalValue.style.color = getTokenColor(totalTokens);
-    totalLine.appendChild(totalLabel);
-    totalLine.appendChild(totalValue);
-    widgetElement.insertBefore(totalLine, dismissBtn);
-
-    if (totalTokens > 30000) {
-      const warning = document.createElement('div');
-      Object.assign(warning.style, {
-        marginTop: '8px', padding: '6px 8px', borderRadius: '6px',
-        background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
-        fontSize: '11px', color: '#fca5a5',
-      });
-      warning.textContent = `🔴 Very expensive conversation. A new chat would save ~${(totalTokens - 100).toLocaleString()} tokens.`;
-      widgetElement.insertBefore(warning, dismissBtn);
-    } else if (totalTokens > 8000) {
-      const warning = document.createElement('div');
-      Object.assign(warning.style, {
-        marginTop: '8px', padding: '6px 8px', borderRadius: '6px',
-        background: 'rgba(234,179,8,0.15)', border: '1px solid rgba(234,179,8,0.3)',
-        fontSize: '11px', color: '#fde68a',
-      });
-      warning.textContent = '🟡 Conversation is getting long. Consider starting a new chat soon.';
-      widgetElement.insertBefore(warning, dismissBtn);
-    }
-  }
-
-  function getTokenColor(tokens: number): string {
-    if (tokens < 500) return '#4ade80';
-    if (tokens <= 2000) return '#facc15';
-    return '#f87171';
   }
 
   // ── Widget Drag ───────────────────────────────────────────────
@@ -408,98 +361,39 @@ import {
     } catch { /* use default */ }
   }
 
-  function hideWidget(): void {
-    if (widgetElement) widgetElement.style.display = 'none';
-    try { chrome.storage.local.set({ widgetVisible: false }); } catch { /* ignore */ }
-  }
-
   // ── Suggestion Panel ──────────────────────────────────────────
 
-  function createSuggestionPanel(): void {
+  function initSuggestionPanel(): void {
     if (suggestionPanel) return;
-    suggestionPanel = document.createElement('div');
-    suggestionPanel.id = 'tokenwise-suggestions';
-    suggestionPanel.setAttribute('data-tokenwise', 'true');
-    Object.assign(suggestionPanel.style, {
-      position: 'fixed', bottom: '120px', left: '50%', transform: 'translateX(-50%)',
-      zIndex: '2147483646', background: 'linear-gradient(135deg, #1a1a2e 0%, #2a2a42 100%)',
-      borderRadius: '12px', padding: '0', color: '#e0e0e0',
-      fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", fontSize: '12px',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)',
-      maxWidth: '500px', width: '90%', maxHeight: '200px', overflowY: 'auto',
-      display: 'none', backdropFilter: 'blur(20px)',
-    });
-    document.body.appendChild(suggestionPanel);
-  }
 
-  function updateSuggestions(text: string, inputEl?: Element | null): void {
-    if (!suggestionPanel || !showSuggestions) return;
-    const suggestions = analyzePrompt(text);
-    if (suggestions.length === 0) { suggestionPanel.style.display = 'none'; return; }
-
-    while (suggestionPanel.firstChild) suggestionPanel.removeChild(suggestionPanel.firstChild);
-
-    const header = document.createElement('div');
-    Object.assign(header.style, {
-      padding: '10px 14px 6px', fontWeight: '600', fontSize: '11px',
-      textTransform: 'uppercase', letterSpacing: '0.5px', color: '#a0a0b8',
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    });
-    const headerText = document.createElement('span');
-    headerText.textContent = `💡 Save ~${getTotalSavings(suggestions)} tokens`;
-    header.appendChild(headerText);
-    const collapseBtn = document.createElement('button');
-    collapseBtn.textContent = '▼';
-    Object.assign(collapseBtn.style, { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '10px' });
-    collapseBtn.addEventListener('click', () => { suggestionPanel!.style.display = 'none'; });
-    header.appendChild(collapseBtn);
-    suggestionPanel.appendChild(header);
-
-    for (const suggestion of suggestions.slice(0, 3)) {
-      const item = document.createElement('div');
-      Object.assign(item.style, {
-        padding: '8px 14px', borderTop: '1px solid rgba(255,255,255,0.06)',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
-      });
-      const textDiv = document.createElement('div');
-      textDiv.style.flex = '1';
-      const msg = document.createElement('div');
-      msg.textContent = suggestion.message;
-      msg.style.color = '#c0c0d8';
-      msg.style.marginBottom = '2px';
-      textDiv.appendChild(msg);
-      const savings = document.createElement('div');
-      savings.textContent = `Save ~${suggestion.tokenSavings} tokens`;
-      savings.style.color = '#4ade80';
-      savings.style.fontSize = '11px';
-      textDiv.appendChild(savings);
-      item.appendChild(textDiv);
-
-      if (suggestion.originalText) {
-        const applyBtn = document.createElement('button');
-        applyBtn.textContent = 'Apply';
-        Object.assign(applyBtn.style, {
-          background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)',
-          color: '#a5b4fc', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer',
-          fontSize: '11px', fontWeight: '500', whiteSpace: 'nowrap',
-        });
-        applyBtn.addEventListener('click', () => {
-          try {
-            const inputEl = findGeminiInput();
-            if (!inputEl) return;
-            const currentText = getInputText(inputEl);
-            const newText = applySuggestion(currentText, suggestion);
-            setInputText(inputEl, newText);
-            handleInputChange();
-            try { chrome.runtime.sendMessage({ type: 'SAVINGS_TRACKED', data: { tokens: suggestion.tokenSavings } }); } catch { /* ignore */ }
-          } catch { /* fail silently */ }
-        });
-        item.appendChild(applyBtn);
+    suggestionPanel = createSuggestionPanelController({
+      getInputElement: () => findGeminiInput(),
+      getInputText: () => {
+        const el = findGeminiInput();
+        return el ? getInputText(el) : '';
+      },
+      setInputText: (element: Element, text: string) => {
+        setInputText(element, text);
+        handleInputChange();
+      },
+      onAfterApply: () => {
+        // Any post-apply logic
+      },
+      trackSavings: (tokens: number) => {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'SAVINGS_TRACKED',
+            data: { tokens },
+          });
+        } catch {
+          // Ignore
+        }
       }
-      suggestionPanel.appendChild(item);
+    }, () => showSuggestions);
+
+    if (showSuggestions) {
+      suggestionPanel.create();
     }
-    suggestionPanel.style.display = 'block';
-    positionPanelAboveElement(suggestionPanel, inputEl || findGeminiInput());
   }
 
   // ── Gemini Input Finder ───────────────────────────────────────
@@ -530,9 +424,9 @@ import {
       currentInputTokens = result.tokens;
       updateWidgetContent(currentInputTokens, conversationTokens + currentInputTokens);
       if (showSuggestions && text.trim().length >= 8) {
-        updateSuggestions(text, inputEl);
+        suggestionPanel?.update(text, currentAttachments);
       } else if (suggestionPanel) {
-        suggestionPanel.style.display = 'none';
+        suggestionPanel.hide();
       }
       sendUpdate();
     } catch { /* fail silently */ }
@@ -571,15 +465,28 @@ import {
         attachments = findAllInShadowRoots(CONFIG.fileAttachmentSelector);
       }
       attachmentCount = attachments.length;
+      
+      const estimates: FileEstimate[] = [];
+
       for (const el of attachments) {
-        if (el.getAttribute('data-tokenwise-processed')) continue;
-        el.setAttribute('data-tokenwise-processed', 'true');
         const fileName = el.getAttribute('data-filename') || el.getAttribute('title') || el.textContent?.trim().slice(0, 100) || 'unknown';
         const fileSize = parseInt(el.getAttribute('data-filesize') || '0', 10);
         const fileType = el.getAttribute('data-filetype') || '';
         const img = el.querySelector('img');
         const estimate = estimateFileTokens(fileName, fileSize, fileType, img?.naturalWidth || 0, img?.naturalHeight || 0);
+        estimates.push(estimate);
+
+        if (el.getAttribute('data-tokenwise-processed')) continue;
+        el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
+      }
+      
+      currentAttachments = estimates;
+      
+      if (showSuggestions && suggestionPanel) {
+        const inputEl = findGeminiInput();
+        const text = inputEl ? getInputText(inputEl) : '';
+        suggestionPanel.update(text, currentAttachments);
       }
     } catch { /* fail silently */ }
   }
@@ -639,22 +546,36 @@ import {
         if (areaName !== 'local') return;
 
         if (changes.widgetVisible?.newValue === false) hideWidget();
-        else if (changes.widgetVisible?.newValue === true && widgetElement) {
-          widgetElement.style.display = 'block';
+        else if (changes.widgetVisible?.newValue === true) {
+          widgetVisible = true;
+          if (widgetElement) {
+            widgetElement.style.display = 'block';
+          } else {
+            createWidget();
+          }
         }
 
         if (changes.settings?.newValue) {
           const settings = changes.settings.newValue as Record<string, unknown>;
           if (settings.showWidget === false) hideWidget();
-          else if (settings.showWidget === true && widgetElement) {
-            widgetElement.style.display = 'block';
+          else if (settings.showWidget === true) {
+            widgetVisible = true;
+            if (widgetElement) {
+              widgetElement.style.display = 'block';
+            } else {
+              createWidget();
+            }
           }
           if (settings.showSuggestions === false) {
             showSuggestions = false;
-            if (suggestionPanel) suggestionPanel.style.display = 'none';
+            if (suggestionPanel) suggestionPanel.hide();
           } else if (settings.showSuggestions === true) {
             showSuggestions = true;
-            if (!suggestionPanel) createSuggestionPanel();
+            if (!suggestionPanel) {
+              initSuggestionPanel();
+            } else {
+              suggestionPanel.create();
+            }
           }
         }
       });
@@ -679,8 +600,16 @@ import {
       if (sender.id !== chrome.runtime.id) return;
       if (message.type === 'SETTINGS_CHANGED') {
         if (message.data.showWidget === false) hideWidget();
-        else if (message.data.showWidget === true && widgetElement) widgetElement.style.display = 'block';
-        if (message.data.showSuggestions === false && suggestionPanel) suggestionPanel.style.display = 'none';
+        else if (message.data.showWidget === true) {
+          widgetVisible = true;
+          if (widgetElement) {
+            widgetElement.style.display = 'block';
+          } else {
+            createWidget();
+          }
+        }
+        if (message.data.showSuggestions === false && suggestionPanel) suggestionPanel.hide();
+        else if (message.data.showSuggestions === true && suggestionPanel) suggestionPanel.create();
         sendResponse({ ok: true });
       } else if (message.type === 'GET_CURRENT_STATE') {
         sendResponse({ site: SITE, inputTokens: currentInputTokens, conversationTokens, messageCount, attachmentCount });

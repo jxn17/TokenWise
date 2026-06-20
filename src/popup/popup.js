@@ -138,7 +138,10 @@
   function setupEventListeners() {
     if (elements.toggleWidget) {
       elements.toggleWidget.addEventListener('change', () => {
-        saveSettings({ showWidget: elements.toggleWidget.checked });
+        const isVisible = elements.toggleWidget.checked;
+        saveSettings({ showWidget: isVisible });
+        // Set widgetVisible directly in local storage so that it matches
+        try { chrome.storage.local.set({ widgetVisible: isVisible }); } catch {}
       });
     }
 

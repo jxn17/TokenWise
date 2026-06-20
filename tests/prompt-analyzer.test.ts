@@ -54,4 +54,21 @@ describe('analyzePrompt', () => {
     const updated = applySuggestion(text, filler!);
     expect(updated.toLowerCase()).not.toContain('can you please');
   });
+
+  test('detects Gen Z casual filler words', () => {
+    const text = 'like can you like help me with this idk how to do it ngl';
+    const suggestions = analyzePrompt(text);
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions.some((s) => s.message.toLowerCase().includes('like'))).toBe(true);
+    expect(suggestions.some((s) => s.message.toLowerCase().includes('idk'))).toBe(true);
+    expect(suggestions.some((s) => s.message.toLowerCase().includes('ngl'))).toBe(true);
+  });
+
+  test('detects casual hedges', () => {
+    const text = 'tbh i kinda know how to do this lowkey';
+    const suggestions = analyzePrompt(text);
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions.some((s) => s.message.toLowerCase().includes('kinda'))).toBe(true);
+    expect(suggestions.some((s) => s.message.toLowerCase().includes('lowkey'))).toBe(true);
+  });
 });
