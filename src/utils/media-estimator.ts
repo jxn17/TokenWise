@@ -88,19 +88,29 @@ export function estimateFileTokens(
 
   switch (category) {
     case 'text': {
-      estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
-      const kbSize = Math.round(safeSize / 1024);
-      tip = kbSize > 50
-        ? `Text file ${kbSize}KB (~${estimatedTokens.toLocaleString()} tokens). Paste only relevant sections.`
-        : `Text file: ~${estimatedTokens.toLocaleString()} tokens`;
+      if (safeSize === 0) {
+        estimatedTokens = 200;
+        tip = 'Text file: ~200 tokens (size unknown — estimate may vary).';
+      } else {
+        estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
+        const kbSize = Math.round(safeSize / 1024);
+        tip = kbSize > 50
+          ? `Text file ${kbSize}KB (~${estimatedTokens.toLocaleString()} tokens). Paste only relevant sections.`
+          : `Text file: ~${estimatedTokens.toLocaleString()} tokens`;
+      }
       optimizationTips.push('Copy only the lines you need instead of the full file');
       optimizationTips.push('Remove comments and boilerplate before pasting');
       break;
     }
 
     case 'spreadsheet': {
-      estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
-      tip = `Spreadsheet (~${estimatedTokens.toLocaleString()} tokens). Export only used sheets/columns.`;
+      if (safeSize === 0) {
+        estimatedTokens = 500;
+        tip = 'Spreadsheet: ~500 tokens (size unknown — actual cost depends on row/column count).';
+      } else {
+        estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
+        tip = `Spreadsheet (~${estimatedTokens.toLocaleString()} tokens). Export only used sheets/columns.`;
+      }
       optimizationTips.push('Export a CSV with only required columns');
       optimizationTips.push('Delete empty rows and hidden sheets before attaching');
       optimizationTips.push('Summarize aggregates in text instead of uploading raw data');
@@ -108,18 +118,28 @@ export function estimateFileTokens(
     }
 
     case 'document': {
-      const kbSize = Math.max(1, Math.round(safeSize / 1024));
-      estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_DOC);
-      tip = `Word document (~${estimatedTokens.toLocaleString()} tokens). Paste relevant sections only.`;
+      if (safeSize === 0) {
+        estimatedTokens = 600;
+        tip = 'Document: ~600 tokens (size unknown — actual cost depends on length).';
+      } else {
+        const kbSize = Math.max(1, Math.round(safeSize / 1024));
+        estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_DOC);
+        tip = `Word document (~${estimatedTokens.toLocaleString()} tokens). Paste relevant sections only.`;
+      }
       optimizationTips.push('Copy only the chapter or section you need');
       optimizationTips.push('Convert to plain text or markdown for smaller token cost');
       break;
     }
 
     case 'presentation': {
-      const kbSize = Math.max(1, Math.round(safeSize / 1024));
-      estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_PPT);
-      tip = `Presentation (~${estimatedTokens.toLocaleString()} tokens). Export slide outline as text.`;
+      if (safeSize === 0) {
+        estimatedTokens = 400;
+        tip = 'Presentation: ~400 tokens (size unknown — actual cost depends on slide count).';
+      } else {
+        const kbSize = Math.max(1, Math.round(safeSize / 1024));
+        estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_PPT);
+        tip = `Presentation (~${estimatedTokens.toLocaleString()} tokens). Export slide outline as text.`;
+      }
       optimizationTips.push('Export speaker notes or bullet outline instead of full deck');
       optimizationTips.push('Attach only slides relevant to your question');
       break;
@@ -150,35 +170,45 @@ export function estimateFileTokens(
     }
 
     case 'pdf': {
-      const kbSize = Math.max(1, Math.round(safeSize / 1024));
-      estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_PDF);
-      const pageEstimate = Math.round(kbSize / 40);
-      tip = `PDF (~${pageEstimate} pages, ~${estimatedTokens.toLocaleString()} tokens).`;
+      if (safeSize === 0) {
+        // Size not available — use a realistic minimum for a typical 1-2 page PDF.
+        // Actual cost is ~1,500–3,000 tokens per page (text content).
+        estimatedTokens = 2000;
+        tip = 'PDF: ~2,000 tokens (size unknown — typically 1,500–3,000 tokens per page).';
+      } else {
+        const kbSize = Math.max(1, Math.round(safeSize / 1024));
+        estimatedTokens = Math.ceil(kbSize * TOKENS_PER_KB_PDF);
+        const pageEstimate = Math.max(1, Math.round(kbSize / 40));
+        tip = `PDF (~${pageEstimate} page${pageEstimate > 1 ? 's' : ''}, ~${estimatedTokens.toLocaleString()} tokens).`;
+      }
       optimizationTips.push('Extract only the pages you need');
       optimizationTips.push('Copy-paste relevant paragraphs instead of the full PDF');
       break;
     }
 
     case 'video': {
+      // Token cost is impossible to estimate without knowing duration.
+      // Claude samples ~1 frame/sec; each frame costs ~170–765 tokens depending on resolution.
       estimatedTokens = -1;
-      tip = 'Video is extremely token-expensive. Use a transcript instead.';
+      tip = '⚠️ Video: cost varies by duration (~170–765 tokens/sampled frame). Keep clips short.';
       optimizationTips.push('Extract transcript and paste only the relevant section');
-      optimizationTips.push('Compress video or upload a short clip if the platform requires video');
+      optimizationTips.push('Claude samples ~1 frame/sec — shorter clips cost far fewer tokens');
       break;
     }
 
     case 'audio': {
-      const durationEstimate = Math.round(safeSize / (16000 * 2));
-      estimatedTokens = Math.ceil(durationEstimate * 25);
-      tip = `Audio (~${Math.max(1, durationEstimate)}s). Transcribe and paste text instead.`;
-      optimizationTips.push('Transcribe locally and paste only the needed excerpt');
-      optimizationTips.push('Trim silence and intro segments before uploading');
+      // Claude's API does NOT accept audio files — they are rejected at upload.
+      // No token estimate is meaningful; show a clear warning instead.
+      estimatedTokens = -1;
+      tip = '⚠️ Claude cannot process audio files. Remove this and paste a transcript instead.';
+      optimizationTips.push('Use Whisper or Google Speech to transcribe the audio locally');
+      optimizationTips.push('Paste only the relevant excerpt of the transcript');
       break;
     }
 
     default: {
-      estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
-      tip = `Unknown file type (~${estimatedTokens.toLocaleString()} tokens estimated from size).`;
+      estimatedTokens = safeSize > 0 ? Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT) : 300;
+      tip = `Unknown file type: ~${estimatedTokens.toLocaleString()} tokens${safeSize === 0 ? ' (size unknown)' : ''}.`;
       optimizationTips.push('Convert to plain text if possible for lower token cost');
       break;
     }
@@ -267,10 +297,12 @@ function sanitizeFileName(name: string): string {
 
 export function generateFileTooltip(estimate: FileEstimate): string {
   const icon = getCategoryIcon(estimate.category);
-  const tokenStr = estimate.estimatedTokens === -1
-    ? 'Very expensive'
-    : `~${estimate.estimatedTokens.toLocaleString()} tokens`;
-
+  let tokenStr: string;
+  if (estimate.estimatedTokens === -1) {
+    tokenStr = estimate.category === 'audio' ? '⚠️ Not supported' : '⚠️ Cost varies';
+  } else {
+    tokenStr = `~${estimate.estimatedTokens.toLocaleString()} tokens`;
+  }
   return `${icon} ${estimate.fileName} — ${tokenStr}`;
 }
 

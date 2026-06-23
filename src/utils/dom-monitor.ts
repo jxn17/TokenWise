@@ -38,14 +38,14 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
   },
 
   claude: {
-    inputSelector: '[data-testid="composer-input"] div.ProseMirror, [data-testid="composer-input"], div.ProseMirror[contenteditable="true"], div.ProseMirror, [aria-label="Message Claude"][contenteditable="true"], [aria-label*="Message Claude"], div[role="textbox"][contenteditable="true"], [data-placeholder][contenteditable="true"]',
+    inputSelector: '.tiptap.ProseMirror, div.ProseMirror[contenteditable="true"], div[role="textbox"][contenteditable="true"], div.ProseMirror, [aria-label="Message Claude"][contenteditable="true"], [aria-label*="Message Claude"], [data-placeholder][contenteditable="true"], [data-testid="composer-input"] div.ProseMirror, [data-testid="composer-input"]',
     messageSelector: '[data-testid="user-message"], .font-user-message, .font-claude-response, [data-testid="assistant-message"]',
     sendButtonSelector: 'button[aria-label="Send Message"], button[aria-label="Send message"], button[data-testid="send-button"], button[type="submit"]',
     assistantRole: 'assistant',
     userRole: 'human',
     shadowDom: false,
-    chatContainerSelector: '[data-testid="conversation"], main, [class*="ConversationContent"], [class*="chat-content"]',
-    fileAttachmentSelector: '[data-testid="file-thumbnail"], [data-testid="image-thumbnail"], [data-testid="file-attachment"], [data-testid="attachment"], [class*="attachment"], [class*="Attachment"], [class*="file-pill"], [class*="uploaded-file"]',
+    chatContainerSelector: '[data-testid="chat-stale-nav-inert"], [data-testid="conversation"], main, [class*="ConversationContent"]',
+    fileAttachmentSelector: '[class*="group/thumbnail"], [data-testid="file-thumbnail"], [data-testid="image-thumbnail"], [data-testid="file-attachment"], [data-testid="attachment"], [class*="file-pill"], [class*="uploaded-file"]',
     hostname: 'claude.ai',
   },
 
@@ -134,11 +134,17 @@ export function safeQuerySelectorAll(
 ): Element[] {
   try {
     const selectors = selector.split(',').map(s => s.trim());
+    const seen = new Set<Element>();
     const results: Element[] = [];
 
     for (const sel of selectors) {
       const elements = root.querySelectorAll(sel);
-      elements.forEach(el => results.push(el));
+      elements.forEach(el => {
+        if (!seen.has(el)) {
+          seen.add(el);
+          results.push(el);
+        }
+      });
     }
 
     // For Shadow DOM sites, also search shadow roots
@@ -320,7 +326,9 @@ export function getInputText(element: Element | null): string {
 
     const target = proseTarget || element;
     const htmlEl = target as HTMLElement;
-    const text = (htmlEl.innerText || target.textContent || '').replace(/\u200b/g, '');
+    const text = (htmlEl.innerText || target.textContent || '')
+      .replace(/\u200b/g, '')  // strip zero-width spaces
+      .replace(/\n$/, '');     // strip Tiptap/ProseMirror trailing newline on empty editor
     return text;
   } catch {
     return '';
@@ -483,23 +491,23 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   try {
-    // Strategy 1: Try to find conversation turns (each turn wraps a user or assistant message)
-    const turnSelectors = [
-      '[data-testid="user-turn"]',
-      '[data-testid="assistant-turn"]',
-      '.user-turn',
-      '.assistant-turn',
-    ];
-    const turns = document.querySelectorAll(turnSelectors.join(', '));
-    
-    if (turns.length > 0) {
-      const ordered = sortByDocumentOrder(Array.from(turns));
-      for (const turn of ordered) {
-        const isUser = turn.matches('[data-testid="user-turn"], .user-turn') 
-          || turn.querySelector('[data-testid="user-message"], .font-user-message') !== null;
-        const content = turn.textContent?.trim() || '';
+    // Strategy 1: Try paired [data-testid="user-message"] + .font-claude-response
+    // (Claude's current DOM as of 2026 — data-testid turn wrappers no longer exist)
+    const userMsgs = Array.from(document.querySelectorAll('[data-testid="user-message"]'));
+    const assistantMsgs = Array.from(document.querySelectorAll('.font-claude-response, [data-testid="assistant-message"]'));
+
+    if (userMsgs.length > 0 || assistantMsgs.length > 0) {
+      const all = [
+        ...userMsgs.map(el => ({ el, role: 'user' as const })),
+        ...assistantMsgs.map(el => ({ el, role: 'assistant' as const })),
+      ].sort((a, b) => {
+        const pos = a.el.compareDocumentPosition(b.el);
+        return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+      for (const { el, role } of all) {
+        const content = el.textContent?.trim() || '';
         if (!content) continue;
-        messages.push({ role: isUser ? 'user' : 'assistant', content });
+        messages.push({ role, content });
       }
       if (messages.length > 0) return messages;
     }

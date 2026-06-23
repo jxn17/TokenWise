@@ -31,6 +31,8 @@ export interface SuggestionPanelController {
   create: () => void;
   hide: () => void;
   update: (text: string, attachments: FileEstimate[]) => void;
+  /** Reset dismissed state and force the panel to show immediately. */
+  forceShow: (text: string, attachments: FileEstimate[]) => void;
   isVisible: () => boolean;
 }
 
@@ -39,6 +41,9 @@ export function createSuggestionPanelController(
   enabled: () => boolean
 ): SuggestionPanelController {
   let panel: HTMLElement | null = null;
+  let userDismissed = false;
+  let dismissedAtAttachmentCount = -1;
+  let dismissedAtTextLength = -1;
 
   function create(): void {
     if (panel) return;
@@ -48,29 +53,31 @@ export function createSuggestionPanelController(
     panel.setAttribute('data-tokenwise', 'true');
     Object.assign(panel.style, {
       position: 'fixed',
-      bottom: '120px',
-      left: '50%',
-      transform: 'translateX(-50%)',
+      right: '20px',
+      bottom: '280px',    // above the token widget (which sits at bottom: 80px)
+      left: 'auto',
+      transform: 'none',
       zIndex: '2147483646',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #2a2a42 100%)',
-      borderRadius: '12px',
+      background: 'linear-gradient(135deg, #13131f 0%, #1e1e35 100%)',
+      borderRadius: '14px',
+      border: '1px solid rgba(255,255,255,0.07)',
       padding: '0',
       color: '#e0e0e0',
       fontFamily: "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
       fontSize: '12px',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)',
-      maxWidth: '520px',
-      width: '92%',
-      maxHeight: '320px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
+      width: '310px',
+      maxHeight: '420px',
       overflowY: 'auto',
       display: 'none',
-      backdropFilter: 'blur(20px)',
+      backdropFilter: 'blur(24px)',
     });
     document.body.appendChild(panel);
   }
 
   function hide(): void {
     if (panel) panel.style.display = 'none';
+    userDismissed = true;
   }
 
   function isVisible(): boolean {
@@ -85,6 +92,21 @@ export function createSuggestionPanelController(
 
     const promptSuggestions = analyzePrompt(text);
     const hasAttachments = attachments.length > 0;
+
+    // If user explicitly dismissed, only re-show when content meaningfully changes:
+    // either a new attachment was added, or text length changed by >10 chars.
+    if (userDismissed) {
+      const attachmentsChanged = attachments.length !== dismissedAtAttachmentCount;
+      const textChangedSignificantly = Math.abs(text.length - dismissedAtTextLength) > 10;
+      if (!attachmentsChanged && !textChangedSignificantly) {
+        return;
+      }
+      userDismissed = false;
+    }
+
+    // Track current state for next dismissed check
+    dismissedAtAttachmentCount = attachments.length;
+    dismissedAtTextLength = text.length;
 
     if (promptSuggestions.length === 0 && !hasAttachments) {
       hide();
@@ -140,11 +162,16 @@ export function createSuggestionPanelController(
       headerActions.appendChild(applyAllBtn);
     }
 
-    const collapseBtn = document.createElement('button');
-    collapseBtn.textContent = '▼';
-    styleSmallButton(collapseBtn, false);
-    collapseBtn.addEventListener('click', hide);
-    headerActions.appendChild(collapseBtn);
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.title = 'Dismiss';
+    styleSmallButton(closeBtn, false);
+    closeBtn.addEventListener('click', () => {
+      dismissedAtAttachmentCount = attachments.length;
+      dismissedAtTextLength = text.length;
+      hide();
+    });
+    headerActions.appendChild(closeBtn);
 
     header.appendChild(headerActions);
     panel.appendChild(header);
@@ -158,7 +185,14 @@ export function createSuggestionPanelController(
     }
 
     panel.style.display = 'block';
-    positionPanelAboveElement(panel, callbacks.getInputElement());
+    // Panel is fixed to right:20px bottom:280px — no dynamic repositioning needed.
+  }
+
+  function forceShow(text: string, attachments: FileEstimate[]): void {
+    userDismissed = false;
+    dismissedAtAttachmentCount = -1;
+    dismissedAtTextLength = -1;
+    update(text, attachments);
   }
 
   return {
@@ -168,6 +202,7 @@ export function createSuggestionPanelController(
     create,
     hide,
     update,
+    forceShow,
     isVisible,
   };
 }
@@ -175,68 +210,94 @@ export function createSuggestionPanelController(
 function renderAttachmentSection(panel: HTMLElement, attachments: FileEstimate[]): void {
   const section = document.createElement('div');
   Object.assign(section.style, {
-    padding: '8px 14px',
-    borderTop: '1px solid rgba(255,255,255,0.06)',
+    padding: '10px 14px 4px',
+    borderBottom: '1px solid rgba(255,255,255,0.06)',
   });
 
   const title = document.createElement('div');
-  title.textContent = 'Attachments';
+  title.textContent = '📎 Attachments';
   Object.assign(title.style, {
     fontSize: '10px',
     textTransform: 'uppercase',
     letterSpacing: '0.5px',
-    color: '#8888a8',
-    marginBottom: '6px',
-    fontWeight: '600',
+    color: '#6060a0',
+    marginBottom: '8px',
+    fontWeight: '700',
   });
   section.appendChild(title);
 
-  for (const file of attachments.slice(0, 3)) {
+  for (const file of attachments.slice(0, 6)) {
     const row = document.createElement('div');
-    Object.assign(row.style, { marginBottom: '8px' });
+    Object.assign(row.style, {
+      marginBottom: '10px',
+      padding: '8px 10px',
+      background: 'rgba(255,255,255,0.04)',
+      borderRadius: '8px',
+      border: '1px solid rgba(255,255,255,0.06)',
+    });
 
-    const name = document.createElement('div');
-    name.textContent = `${file.fileName} — ${file.estimatedTokens === -1 ? 'very expensive' : `~${file.estimatedTokens.toLocaleString()} tokens`}`;
-    name.style.color = '#c0c0d8';
-    name.style.fontSize = '11px';
-    name.style.marginBottom = '4px';
-    row.appendChild(name);
+    // File name + token count
+    const nameRow = document.createElement('div');
+    Object.assign(nameRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' });
 
+    const nameEl = document.createElement('span');
+    const icon = getCategoryIcon(file.category);
+    nameEl.textContent = `${icon} ${file.fileName}`;
+    Object.assign(nameEl.style, { color: '#d0d0e8', fontSize: '11px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' });
+
+    const tokenEl = document.createElement('span');
+    if (file.estimatedTokens === -1) {
+      tokenEl.textContent = file.category === 'audio' ? '⚠️ Not supported' : '⚠️ Varies';
+      tokenEl.style.color = '#fb923c'; // orange — warning, not error
+    } else {
+      tokenEl.textContent = `~${file.estimatedTokens.toLocaleString()} tokens`;
+      tokenEl.style.color = file.estimatedTokens > 1000 ? '#f87171' : file.estimatedTokens > 300 ? '#facc15' : '#4ade80';
+    }
+    Object.assign(tokenEl.style, { fontSize: '10px', fontWeight: '700', whiteSpace: 'nowrap' });
+
+    nameRow.appendChild(nameEl);
+    nameRow.appendChild(tokenEl);
+    row.appendChild(nameRow);
+
+    // Optimization tips
     for (const tip of file.optimizationTips.slice(0, 2)) {
       const tipEl = document.createElement('div');
       tipEl.textContent = `• ${tip}`;
-      tipEl.style.color = '#a0a0b8';
-      tipEl.style.fontSize = '10px';
-      tipEl.style.marginLeft = '4px';
+      Object.assign(tipEl.style, { color: '#8080b0', fontSize: '10px', lineHeight: '1.5', marginBottom: '2px' });
       row.appendChild(tipEl);
     }
 
-    const resources = getCompressionResources(file.category).slice(0, 2);
-    if (resources.length > 0) {
-      const compressRow = document.createElement('div');
-      Object.assign(compressRow.style, {
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '6px',
-        marginTop: '4px',
-      });
-
-      const label = document.createElement('span');
-      label.textContent = 'Compress:';
-      label.style.color = '#8888a8';
-      label.style.fontSize = '10px';
-      compressRow.appendChild(label);
-
-      for (const resource of resources) {
-        compressRow.appendChild(createResourceLink(resource));
+    // Compression tools — skip for audio (unsupported by Claude anyway)
+    if (file.category !== 'audio') {
+      const resources = getCompressionResources(file.category)
+        .filter(r => !r.name.includes('7-Zip') || file.category === 'archive')
+        .slice(0, 2);
+      if (resources.length > 0) {
+        const compressRow = document.createElement('div');
+        Object.assign(compressRow.style, { display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '6px', alignItems: 'center' });
+        const label = document.createElement('span');
+        label.textContent = file.category === 'image' ? 'Compress:' : 'Tools:';
+        Object.assign(label.style, { color: '#5050a0', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.4px' });
+        compressRow.appendChild(label);
+        for (const resource of resources) {
+          compressRow.appendChild(createResourceLink(resource));
+        }
+        row.appendChild(compressRow);
       }
-      row.appendChild(compressRow);
     }
 
     section.appendChild(row);
   }
 
   panel.appendChild(section);
+}
+
+function getCategoryIcon(category: string): string {
+  const icons: Record<string, string> = {
+    image: '🖼️', pdf: '📑', text: '📄', spreadsheet: '📊',
+    document: '📝', presentation: '📽️', archive: '🗜️', video: '🎥', audio: '🎵',
+  };
+  return icons[category] ?? '📎';
 }
 
 function createResourceLink(resource: CompressionResource): HTMLElement {

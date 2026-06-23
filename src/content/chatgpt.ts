@@ -12,6 +12,7 @@ import { renderWidgetBody } from '../utils/widget-ui';
 import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
+import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -35,6 +36,7 @@ import {
   let chatObserver: DebouncedObserver | null = null;
   let widgetElement: HTMLElement | null = null;
   let suggestionPanel: SuggestionPanelController | null = null;
+  let ghostText: GhostTextController | null = null;
   let currentAttachments: FileEstimate[] = [];
   let currentInputTokens = 0;
   let conversationTokens = 0;
@@ -63,6 +65,7 @@ import {
       if (showSuggestions) {
         initSuggestionPanel();
       }
+      initGhostText();
 
       // Wait for input element with error handling
       try {
@@ -304,6 +307,37 @@ import {
     }
   }
 
+  // ── Ghost Text Rewriter ───────────────────────────────────────
+
+  function initGhostText(): void {
+    if (ghostText) return;
+
+    ghostText = createGhostTextController({
+      getText: () => {
+        const el = safeQuerySelector(CONFIG.inputSelector);
+        return el ? getInputText(el) : '';
+      },
+      getInputElement: () => safeQuerySelector(CONFIG.inputSelector),
+      setText: (element: Element, text: string) => {
+        setInputText(element, text);
+        handleInputChange();
+      },
+      onApply: () => {
+        // Track that we applied a rewrite as token savings
+        try {
+          chrome.runtime.sendMessage({
+            type: 'SAVINGS_TRACKED',
+            data: { tokens: currentInputTokens },
+          });
+        } catch {
+          // Ignore
+        }
+      },
+    });
+
+    ghostText.mount();
+  }
+
   // ── Input Observer ────────────────────────────────────────────
 
   function setupInputObserver(): void {
@@ -336,12 +370,15 @@ import {
       const totalCost = conversationTokens + currentInputTokens;
       updateWidgetContent(currentInputTokens, totalCost);
 
-      // Update suggestions
+      // Update suggestions panel (individual tips)
       if (showSuggestions && text.trim().length >= 8) {
         suggestionPanel?.update(text, currentAttachments);
       } else if (suggestionPanel) {
         suggestionPanel.hide();
       }
+
+      // Update ghost text rewriter (full rewrite preview)
+      ghostText?.onInput(text);
 
       // Send update to service worker
       sendUpdate();
@@ -732,6 +769,7 @@ import {
     try {
       inputObserver?.disconnect();
       chatObserver?.disconnect();
+      ghostText?.destroy();
 
       // Save final session data
       const duration = Date.now() - sessionStartTime;

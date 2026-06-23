@@ -133,6 +133,7 @@ export function analyzePrompt(text: string): Suggestion[] {
   const suggestions: Suggestion[] = [
     ...detectFillerPhrases(trimmed),
     ...detectWeakWords(trimmed),
+    ...detectLetterStretching(trimmed),
     ...detectRedundancy(trimmed),
     ...detectLongSentences(trimmed),
     ...detectMultipleQuestions(trimmed),
@@ -171,6 +172,48 @@ function detectFillerPhrases(text: string): Suggestion[] {
         }
       }
     }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Detect letter stretching: "soooo" → "so", "baddd" → "bad", "heyyyy" → "hey".
+ * Any letter repeated 3+ times consecutively costs extra tokens for no benefit.
+ */
+function detectLetterStretching(text: string): Suggestion[] {
+  const suggestions: Suggestion[] = [];
+
+  // Matches any word containing a letter repeated 3+ times in a row
+  const pattern = /\b\w*(\w)\1{2,}\w*\b/g;
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const word = match[0];
+    const wordLower = word.toLowerCase();
+
+    // Skip URL prefix "www" and already-processed words
+    if (wordLower === 'www') continue;
+    if (seen.has(wordLower)) continue;
+    seen.add(wordLower);
+
+    // Collapse ALL consecutive repeated characters to one instance
+    // e.g. "soooo" → "so", "baddd" → "bad", "heyyyy" → "hey"
+    const collapsed = word.replace(/(.)\1{2,}/g, '$1');
+    if (collapsed === word) continue;
+
+    const savings = Math.max(1, quickEstimate(word) - quickEstimate(collapsed));
+
+    suggestions.push({
+      id: `letter-stretch-${wordLower}-${Date.now()}`,
+      type: 'filler',
+      message: `Letter stretching: "${word}" → "${collapsed}"`,
+      originalText: word,
+      suggestedText: collapsed,
+      tokenSavings: savings,
+      priority: 'medium',
+    });
   }
 
   return suggestions;

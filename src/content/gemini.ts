@@ -13,6 +13,7 @@ import { renderWidgetBody } from '../utils/widget-ui';
 import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
+import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -46,6 +47,7 @@ import {
   let dragOffsetY = 0;
   let widgetVisible = true;
   let showSuggestions = true;
+  let ghostText: GhostTextController | null = null;
 
   // ── Initialization ────────────────────────────────────────────
 
@@ -61,6 +63,7 @@ import {
       if (showSuggestions) {
         initSuggestionPanel();
       }
+      initGhostText();
 
       await waitForGeminiInput(15000);
 
@@ -430,8 +433,31 @@ import {
       } else if (suggestionPanel) {
         suggestionPanel.hide();
       }
+      // Ghost text rewriter
+      ghostText?.onInput(text);
       sendUpdate();
     } catch { /* fail silently */ }
+  }
+
+  function initGhostText(): void {
+    if (ghostText) return;
+    ghostText = createGhostTextController({
+      getText: () => {
+        const el = findGeminiInput();
+        return el ? getInputText(el) : '';
+      },
+      getInputElement: () => findGeminiInput(),
+      setText: (element: Element, text: string) => {
+        setInputText(element, text);
+        handleInputChange();
+      },
+      onApply: () => {
+        try {
+          chrome.runtime.sendMessage({ type: 'SAVINGS_TRACKED', data: { tokens: currentInputTokens } });
+        } catch { /* ignore */ }
+      },
+    });
+    ghostText.mount();
   }
 
   // ── Chat Observer ─────────────────────────────────────────────
@@ -633,6 +659,7 @@ import {
     try {
       inputObserver?.disconnect();
       chatObserver?.disconnect();
+      ghostText?.destroy();
       chrome.runtime.sendMessage({
         type: 'SESSION_END',
         data: { site: SITE, totalTokens: conversationTokens, messageCount, attachmentCount, durationMs: Date.now() - sessionStartTime },

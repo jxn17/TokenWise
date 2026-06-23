@@ -9,9 +9,11 @@
 import { countTokens, estimateConversationTokens, type ModelType, type Message } from '../utils/tokenizer';
 import { createSuggestionPanelController, type SuggestionPanelController } from '../utils/suggestion-panel';
 import { renderWidgetBody } from '../utils/widget-ui';
-import { estimateFileTokens, detectURLs, type FileEstimate } from '../utils/media-estimator';
+import { type ExportMessage } from '../utils/context-exporter';
+import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate } from '../utils/media-estimator';
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
+import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -20,6 +22,7 @@ import {
   getInputText,
   setInputText,
   positionPanelAboveElement,
+  findComposerInput,
   extractMessages,
   type DebouncedObserver,
 } from '../utils/dom-monitor';
@@ -50,6 +53,7 @@ import {
   let boundInputElement: Element | null = null;
   let composerWatcher: DebouncedObserver | null = null;
   let currentAttachments: FileEstimate[] = [];
+  let ghostText: GhostTextController | null = null;
 
   const suggestionPanel = createSuggestionPanelController(
     {
@@ -88,6 +92,7 @@ import {
       if (showSuggestions) {
         suggestionPanel.create();
       }
+      initGhostText();
       setupComposerWatcher();
 
       await waitForClaudeInput(30000);
@@ -97,13 +102,17 @@ import {
 
       sendUpdate();
       setupStorageListener();
-    } catch {
-      // Fail silently if initialization fails
+    } catch (e) {
+      await reportError(SITE, 'INIT_FAILED', 'Failed to initialize content script', undefined, e instanceof Error ? e : undefined);
     }
   }
 
   function findClaudeInput(): Element | null {
     return findComposerInput(CONFIG);
+  }
+
+  function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; content: string }> {
+    return extractMessages(CONFIG);
   }
 
   function bindToComposer(): void {
@@ -216,6 +225,31 @@ import {
     });
     widgetElement.appendChild(dismissBtn);
 
+    // 💡 Tips toggle — re-opens the suggestion panel after dismissal
+    const tipsBtn = document.createElement('button');
+    tipsBtn.textContent = '💡';
+    tipsBtn.title = 'Show optimization tips';
+    Object.assign(tipsBtn.style, {
+      position: 'absolute',
+      top: '4px',
+      right: '28px',
+      background: 'none',
+      border: 'none',
+      color: '#888',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      lineHeight: '1',
+    });
+    tipsBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    tipsBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      const inputEl = findClaudeInput();
+      const text = inputEl ? getInputText(inputEl) : '';
+      suggestionPanel.forceShow(text, currentAttachments);
+    });
+    widgetElement.appendChild(tipsBtn);
+
     widgetElement.addEventListener('mousedown', startDrag);
     restoreWidgetPosition();
     document.body.appendChild(widgetElement);
@@ -314,7 +348,7 @@ import {
     handleInputChange();
   }
 
-  function handleInputChange(): void {
+  async function handleInputChange(): Promise<void> {
     try {
       const inputEl = findClaudeInput();
       if (!inputEl) return;
@@ -322,13 +356,36 @@ import {
       const result = countTokens(text, MODEL);
       currentInputTokens = result.tokens;
       updateWidgetContent(currentInputTokens, conversationTokens + currentInputTokens);
-      if (showSuggestions && text.trim().length >= 8) {
+      if (showSuggestions && (text.trim().length >= 8 || currentAttachments.length > 0)) {
         suggestionPanel.update(text, currentAttachments);
       } else {
         suggestionPanel.hide();
       }
+      // Ghost text rewriter
+      ghostText?.onInput(text);
       sendUpdate();
-    } catch { /* fail silently */ }
+    } catch (e) { await reportError(SITE, 'INPUT_CHANGE_FAILED', 'Failed to handle input change', undefined, e instanceof Error ? e : undefined); }
+  }
+
+  function initGhostText(): void {
+    if (ghostText) return;
+    ghostText = createGhostTextController({
+      getText: () => {
+        const el = findClaudeInput();
+        return el ? getInputText(el) : '';
+      },
+      getInputElement: () => findClaudeInput(),
+      setText: (element: Element, text: string) => {
+        setInputText(element, text);
+        handleInputChange();
+      },
+      onApply: () => {
+        try {
+          chrome.runtime.sendMessage({ type: 'SAVINGS_TRACKED', data: { tokens: currentInputTokens } });
+        } catch { /* ignore */ }
+      },
+    });
+    ghostText.mount();
   }
 
   // ── Chat Observer ─────────────────────────────────────────────
@@ -341,7 +398,7 @@ import {
     chatObserver.observe(chatContainer, { childList: true, subtree: true });
   }
 
-  function scanConversation(): void {
+  async function scanConversation(): Promise<void> {
     try {
       const messages = extractClaudeMessages();
       messageCount = messages.length;
@@ -349,7 +406,7 @@ import {
       conversationTokens = estimateConversationTokens(messagesForCount, MODEL);
       updateWidgetContent(currentInputTokens, conversationTokens + currentInputTokens);
       sendUpdate();
-    } catch { /* fail silently */ }
+    } catch (e) { await reportError(SITE, 'SCAN_CONVERSATION_FAILED', 'Failed to scan conversation', undefined, e instanceof Error ? e : undefined); }
   }
 
   // ── File Detection ────────────────────────────────────────────
@@ -359,60 +416,169 @@ import {
     fileObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  function detectAttachments(): void {
+  async function detectAttachments(): Promise<void> {
     try {
-      const attachments = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
-      attachmentCount = attachments.length;
+      const allEls = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
+      const seenImgSrcs = new Set<string>();
       const estimates: FileEstimate[] = [];
 
-      for (const el of attachments) {
-        let fileName = el.getAttribute('data-filename') || el.getAttribute('title');
-        let fileSizeStr = el.getAttribute('data-filesize') || '';
-        const fileType = el.getAttribute('data-filetype') || '';
+      for (const el of allEls) {
+        const img = el.querySelector('img') as HTMLImageElement | null;
 
-        // Fallback to textContent parsing if attributes are missing
-        if (!fileName || !fileSizeStr) {
-          const text = el.textContent?.trim() || '';
-          
-          // Try to extract filename (e.g. anything with an extension)
-          const nameMatch = text.match(/[\w\s-]+\.[a-zA-Z0-9]{2,4}\b/);
-          if (!fileName && nameMatch) {
-            fileName = nameMatch[0];
-          }
-
-          // Try to extract file size (e.g. 12.4 KB, 1.2 MB)
-          const sizeMatch = text.match(/(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)/i);
-          if (!fileSizeStr && sizeMatch) {
-            const val = parseFloat(sizeMatch[1]);
-            const unit = sizeMatch[2].toUpperCase();
-            if (unit === 'KB') fileSizeStr = String(val * 1024);
-            else if (unit === 'MB') fileSizeStr = String(val * 1024 * 1024);
-            else if (unit === 'GB') fileSizeStr = String(val * 1024 * 1024 * 1024);
-            else fileSizeStr = String(val);
-          }
-
-          if (!fileName) {
-            fileName = text.slice(0, 50) || 'unknown';
-          }
+        // Deduplicate image elements by src to avoid counting the same file twice
+        if (img?.src) {
+          if (seenImgSrcs.has(img.src)) continue;
+          seenImgSrcs.add(img.src);
         }
 
-        const fileSize = parseInt(fileSizeStr || '0', 10);
-        const img = el.querySelector('img');
-        const estimate = estimateFileTokens(fileName, fileSize, fileType, img?.naturalWidth || 0, img?.naturalHeight || 0);
+        let fileName = '';
+        let fileType = '';
+
+        // ── Strategy 1: data-testid="file-thumbnail" ───────────────────────
+        // Claude uses this for all non-image files: XLSX, DOCX, MP4, MP3, etc.
+        // The .flex-col element has TWO children:
+        //   [0] filename span  (e.g. "report.xlsx")
+        //   [1] extension badge (e.g. "xlsx")
+        // Reading full textContent produces "report.xlsxxlsx" — we only want [0].
+        if (el.getAttribute('data-testid') === 'file-thumbnail') {
+          const nameEl = el.querySelector('.flex-col');
+          if (nameEl) {
+            // Prefer the first child element (the filename span, not the badge)
+            const firstChild = nameEl.firstElementChild;
+            if (firstChild) {
+              fileName = firstChild.textContent?.trim() || '';
+            }
+            // If first child is empty, try direct text nodes only (no descendants)
+            if (!fileName) {
+              fileName = Array.from(nameEl.childNodes)
+                .filter(n => n.nodeType === Node.TEXT_NODE)
+                .map(n => n.textContent?.trim() || '')
+                .filter(t => t.length > 0)
+                .join('').trim();
+            }
+            // Last resort: full textContent (old behaviour)
+            if (!fileName) fileName = nameEl.textContent?.trim() || '';
+          }
+          fileType = inferMimeFromExtension(fileName);
+
+        // ── Strategy 2: element has an <img> (images and PDFs) ─────────────
+        // PDFs: Claude renders page 1 as a preview <img> AND shows a "pdf" text badge.
+        // Images: just an <img>, no extra text badge.
+        } else if (img) {
+          // Collect text from own non-tokenwise, non-img children to find type badge
+          const ownText = Array.from(el.childNodes)
+            .filter(n => !(n instanceof Element && (n.hasAttribute('data-tokenwise') || n.tagName === 'IMG')))
+            .map(n => n.textContent ?? '')
+            .join('').trim().toLowerCase();
+
+          if (/\bpdf\b/.test(ownText)) {
+            // PDF preview image — treat as PDF.
+            // Walk up to the nearest card ancestor and look for a .flex-col filename.
+            fileType = 'application/pdf';
+            const card = el.closest(
+              '[class*="group/thumbnail"], [class*="file-card"], [class*="attachment"]'
+            ) as HTMLElement | null;
+            const pdfNameEl = (card ?? el.parentElement)?.querySelector('.flex-col');
+            const pdfFirstChild = pdfNameEl?.firstElementChild;
+            const rawPdfName = pdfFirstChild?.textContent?.trim()
+              || pdfNameEl?.textContent?.trim()
+              || '';
+            // Accept it only if it looks like a real filename (has a dot, isn't just "pdf")
+            if (rawPdfName && rawPdfName.toLowerCase() !== 'pdf' && rawPdfName.includes('.')) {
+              fileName = rawPdfName;
+            } else if (rawPdfName && rawPdfName.toLowerCase() !== 'pdf' && rawPdfName.length > 1) {
+              // name without extension — append .pdf
+              fileName = rawPdfName + '.pdf';
+            } else {
+              fileName = 'document.pdf';
+            }
+            if (!fileName.toLowerCase().endsWith('.pdf')) fileName += '.pdf';
+          } else {
+            // Genuine image upload
+            fileType = 'image/jpeg';
+            const srcPart = (img.src || '').split('/').pop()?.split('?')[0] ?? '';
+            fileName = /\.[a-z]{2,4}$/i.test(srcPart) ? srcPart : 'image.jpg';
+          }
+
+        // ── Strategy 3: fallback text scan ─────────────────────────────────
+        } else {
+          const cleanText = Array.from(el.childNodes)
+            .filter(n => !(n instanceof Element && n.hasAttribute('data-tokenwise')))
+            .map(n => n.textContent ?? '').join('').trim();
+          const nameMatch = cleanText.match(/[\w\s.()\-]+\.[a-zA-Z0-9]{2,5}(?=\s|$)/);
+          fileName = nameMatch ? nameMatch[0].trim() : (cleanText.slice(0, 60) || 'unknown');
+          fileType = inferMimeFromExtension(fileName);
+        }
+
+        const estimate = estimateFileTokens(
+          fileName || 'unknown',
+          0,          // file size not exposed in Claude's DOM
+          fileType,
+          img?.naturalWidth ?? 0,
+          img?.naturalHeight ?? 0
+        );
         estimates.push(estimate);
 
         if (el.getAttribute('data-tokenwise-processed')) continue;
         el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
+
+        // If img hasn't loaded yet, re-run once it does to get real dimensions
+        if (img && !img.complete) {
+          img.addEventListener('load', () => {
+            el.removeAttribute('data-tokenwise-processed');
+            detectAttachments();
+          }, { once: true });
+        }
       }
 
+      attachmentCount = estimates.length;
       currentAttachments = estimates;
+
       if (showSuggestions) {
         const inputEl = findClaudeInput();
         const text = inputEl ? getInputText(inputEl) : '';
         suggestionPanel.update(text, currentAttachments);
       }
-    } catch { /* fail silently */ }
+    } catch (e) { await reportError(SITE, 'DETECT_ATTACHMENTS_FAILED', 'Failed to detect attachments', undefined, e instanceof Error ? e : undefined); }
+  }
+
+  /**
+   * Map a filename's extension to a MIME type so detectFileCategory() works correctly.
+   * Claude's DOM never exposes MIME types, so we infer from the file extension.
+   */
+  function inferMimeFromExtension(fileName: string): string {
+    const ext = (fileName.match(/\.([a-z0-9]{2,5})(?:[\s\u200b]|$)/i)?.[1] ||
+                 fileName.match(/\.([a-z0-9]{2,5})$/i)?.[1] || '').toLowerCase();
+    const MAP: Record<string, string> = {
+      // Documents
+      pdf:  'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      doc:  'application/msword',
+      // Spreadsheets
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      xls:  'application/vnd.ms-excel',
+      csv:  'text/csv',
+      // Presentations
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      ppt:  'application/vnd.ms-powerpoint',
+      // Images
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+      gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+      // Video
+      mp4: 'video/mp4', mov: 'video/mp4', m4v: 'video/mp4',
+      avi: 'video/avi', webm: 'video/webm', mkv: 'video/mkv',
+      // Audio
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+      flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4',
+      // Archives
+      zip: 'application/zip', rar: 'application/zip', '7z': 'application/zip',
+      // Text / code
+      txt: 'text/plain', md: 'text/markdown',
+      js: 'text/javascript', ts: 'text/plain',
+      py: 'text/plain', json: 'application/json',
+    };
+    return MAP[ext] || '';
   }
 
   function addFileTooltip(element: Element, estimate: FileEstimate): void {
@@ -435,14 +601,14 @@ import {
   // ── Paste Detection ───────────────────────────────────────────
 
   function setupPasteDetection(inputEl: Element): void {
-    inputEl.addEventListener('paste', (e: Event) => {
+    inputEl.addEventListener('paste', async (e: Event) => {
       try {
         const pastedText = (e as ClipboardEvent).clipboardData?.getData('text/plain') || '';
         if (pastedText.length > 0) {
           const urls = detectURLs(pastedText);
           if (urls.length > 0) showURLTips(urls);
         }
-      } catch { /* fail silently */ }
+      } catch (e) { await reportError(SITE, 'PASTE_DETECTION_FAILED', 'Failed to handle paste event', undefined, e instanceof Error ? e : undefined); }
     });
   }
 
@@ -462,7 +628,7 @@ import {
     }
   }
 
-  function setupStorageListener(): void {
+  async function setupStorageListener(): Promise<void> {
     try {
       chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName !== 'local') return;
@@ -499,9 +665,7 @@ import {
           }
         }
       });
-    } catch {
-      // Fail silently
-    }
+    } catch (e) { await reportError(SITE, 'STORAGE_LISTENER_FAILED', 'Failed to set up storage listener', undefined, e instanceof Error ? e : undefined); }
   }
 
   // ── Service Worker Communication ──────────────────────────────
@@ -574,6 +738,7 @@ import {
       inputObserver?.disconnect();
       chatObserver?.disconnect();
       composerWatcher?.disconnect();
+      ghostText?.destroy();
       chrome.runtime.sendMessage({
         type: 'SESSION_END',
         data: { site: SITE, totalTokens: conversationTokens, messageCount, attachmentCount, durationMs: Date.now() - sessionStartTime },
