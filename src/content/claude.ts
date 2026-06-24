@@ -39,6 +39,7 @@ import {
   let widgetElement: HTMLElement | null = null;
   let currentInputTokens = 0;
   let conversationTokens = 0;
+  let artifactTokens = 0;   // tokens estimated from sandboxed artifact iframes
   let messageCount = 0;
   let attachmentCount = 0;
   let sessionStartTime = Date.now();
@@ -263,6 +264,7 @@ import {
       siteLabel: 'Claude',
       inputTokens,
       totalTokens,
+      artifactTokens,
       warningThreshold,
       criticalThreshold,
       contextExportMaxTokens,
@@ -404,12 +406,84 @@ import {
       messageCount = messages.length;
       const messagesForCount: Message[] = messages.map(m => ({ role: m.role, content: m.content }));
       conversationTokens = estimateConversationTokens(messagesForCount, MODEL);
-      updateWidgetContent(currentInputTokens, conversationTokens + currentInputTokens);
+      // Add iframe artifact estimate — Claude Artifacts are sandboxed cross-origin
+      // iframes that we can never read, but we can estimate their cost from size.
+      artifactTokens = estimateArtifactTokens();
+      updateWidgetContent(currentInputTokens, conversationTokens + artifactTokens + currentInputTokens);
       sendUpdate();
     } catch (e) { await reportError(SITE, 'SCAN_CONVERSATION_FAILED', 'Failed to scan conversation', undefined, e instanceof Error ? e : undefined); }
   }
 
+  /**
+   * Detect Claude Artifact iframes (hosted on claudemcpcontent.com) and
+   * produce a conservative token-cost estimate from the iframe's rendered size.
+   *
+   * Why iframes can't be read: they are sandboxed cross-origin — no content
+   * script can access their document.  We use visible area as a proxy:
+   *   • Full-size artifact  (720 × 488 px) ≈ 800 tokens of generated code
+   *   • Scale proportionally for other sizes, floor at 200 tokens
+   *   • Invisible / tiny iframes (< 50 px) are infrastructure (ignored)
+   */
+  function estimateArtifactTokens(): number {
+    const ARTIFACT_DOMAIN = 'claudemcpcontent.com';
+    const FULL_AREA_PX2  = 720 * 488;   // reference full-size artifact
+    const FULL_TOKENS    = 800;          // conservative token estimate for reference size
+    const MIN_TOKENS     = 200;          // floor — even a tiny widget costs something
+    const MIN_DIMENSION  = 50;           // px — smaller than this → not a real artifact
+
+    let total = 0;
+    try {
+      document.querySelectorAll('iframe').forEach((iframe) => {
+        // Only count iframes from Claude's artifact CDN
+        if (!iframe.src.includes(ARTIFACT_DOMAIN)) return;
+
+        // Skip invisible / infrastructure iframes (0×0, isolated-segment, etc.)
+        const w = iframe.offsetWidth;
+        const h = iframe.offsetHeight;
+        if (w < MIN_DIMENSION || h < MIN_DIMENSION) return;
+
+        const area = w * h;
+        const estimate = Math.max(MIN_TOKENS, Math.round((area / FULL_AREA_PX2) * FULL_TOKENS));
+        total += estimate;
+      });
+    } catch {
+      // DOM access errors — return whatever we collected so far
+    }
+    return total;
+  }
+
   // ── File Detection ────────────────────────────────────────────
+
+  /**
+   * Walk up from the composer input to find its enclosing container.
+   * This is the element that holds both the text box AND pending file
+   * thumbnails, but is NOT part of the scrollable chat history.
+   * We stop at the first ancestor that is a <form>, <fieldset>, or
+   * an element with a well-known composer data-testid.
+   */
+  function findComposerContainer(): Element {
+    const inputEl = findClaudeInput();
+    if (!inputEl) return document.body;
+
+    // Walk up looking for the composer wrapper
+    const composerTestIds = ['composer-input', 'composer', 'chat-input', 'prompt-input'];
+    let ancestor: Element | null = inputEl.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      const testid = ancestor.getAttribute('data-testid') || '';
+      if (composerTestIds.some(id => testid.includes(id))) return ancestor;
+      const tag = ancestor.tagName.toLowerCase();
+      if (tag === 'form' || tag === 'fieldset') return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+
+    // Fallback: go up a fixed number of levels from the input
+    // (covers cases where no semantic container exists)
+    let fallback: Element = inputEl;
+    for (let i = 0; i < 6 && fallback.parentElement && fallback.parentElement !== document.body; i++) {
+      fallback = fallback.parentElement;
+    }
+    return fallback;
+  }
 
   function setupFileDetection(): void {
     const fileObserver = createDebouncedObserver(() => { detectAttachments(); }, 500);
@@ -418,18 +492,25 @@ import {
 
   async function detectAttachments(): Promise<void> {
     try {
-      const allEls = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
-      const seenImgSrcs = new Set<string>();
+      // Scope query to the composer container only — NOT the whole document.
+      // Without this, attachments from previously sent messages in the
+      // conversation history would be incorrectly detected.
+      const composerRoot = findComposerContainer();
+      const allEls = safeQuerySelectorAll(CONFIG.fileAttachmentSelector, composerRoot);
+
+      // Prune ancestor/descendant duplicates caused by overlapping CSS selectors.
+      // e.g. [class*="group/thumbnail"] matches a wrapper AND [data-testid="file-thumbnail"]
+      // matches a child of the same wrapper — both refer to the same physical file.
+      // Keep only the INNERMOST (most specific/deepest) element for each file.
+      // A parent element is dropped when any other matched element lives inside it.
+      const prunedEls = allEls.filter(
+        el => !allEls.some(other => other !== el && el.contains(other))
+      );
+
       const estimates: FileEstimate[] = [];
 
-      for (const el of allEls) {
+      for (const el of prunedEls) {
         const img = el.querySelector('img') as HTMLImageElement | null;
-
-        // Deduplicate image elements by src to avoid counting the same file twice
-        if (img?.src) {
-          if (seenImgSrcs.has(img.src)) continue;
-          seenImgSrcs.add(img.src);
-        }
 
         let fileName = '';
         let fileType = '';
@@ -443,7 +524,9 @@ import {
         if (el.getAttribute('data-testid') === 'file-thumbnail') {
           const nameEl = el.querySelector('.flex-col');
           if (nameEl) {
-            // Prefer the first child element (the filename span, not the badge)
+            // Prefer the first child element (the filename span, not the extension badge).
+            // Claude's .flex-col has two children: [0] filename, [1] extension badge.
+            // We only want [0] to avoid "README.mdmd" / "report.xlsxxlsx" artifacts.
             const firstChild = nameEl.firstElementChild;
             if (firstChild) {
               fileName = firstChild.textContent?.trim() || '';
@@ -456,8 +539,22 @@ import {
                 .filter(t => t.length > 0)
                 .join('').trim();
             }
-            // Last resort: full textContent (old behaviour)
-            if (!fileName) fileName = nameEl.textContent?.trim() || '';
+            // Last resort: full textContent minus the badge duplicate suffix.
+            // e.g. "README.mdmd" → strip trailing badge text ("md") to get "README.md"
+            if (!fileName) {
+              const fullText = nameEl.textContent?.trim() || '';
+              const badgeText = nameEl.lastElementChild?.textContent?.trim() || '';
+              if (badgeText && fullText.endsWith(badgeText) && fullText !== badgeText) {
+                fileName = fullText.slice(0, fullText.length - badgeText.length).trim();
+              } else {
+                fileName = fullText;
+              }
+            }
+          }
+          // Extra safety: strip any trailing badge suffix that may have slipped through.
+          // Handles edge cases like "README.mdmd" where the badge text repeats the extension.
+          if (fileName) {
+            fileName = stripBadgeSuffix(fileName);
           }
           fileType = inferMimeFromExtension(fileName);
 
@@ -465,29 +562,92 @@ import {
         // PDFs: Claude renders page 1 as a preview <img> AND shows a "pdf" text badge.
         // Images: just an <img>, no extra text badge.
         } else if (img) {
-          // Collect text from own non-tokenwise, non-img children to find type badge
+          // Search the entire element subtree (not just direct children) for "pdf" badge.
+          const allText = el.textContent?.toLowerCase() || '';
           const ownText = Array.from(el.childNodes)
             .filter(n => !(n instanceof Element && (n.hasAttribute('data-tokenwise') || n.tagName === 'IMG')))
             .map(n => n.textContent ?? '')
             .join('').trim().toLowerCase();
 
-          if (/\bpdf\b/.test(ownText)) {
+          if (/\bpdf\b/.test(ownText) || /\bpdf\b/.test(allText)) {
             // PDF preview image — treat as PDF.
-            // Walk up to the nearest card ancestor and look for a .flex-col filename.
             fileType = 'application/pdf';
-            const card = el.closest(
-              '[class*="group/thumbnail"], [class*="file-card"], [class*="attachment"]'
-            ) as HTMLElement | null;
-            const pdfNameEl = (card ?? el.parentElement)?.querySelector('.flex-col');
-            const pdfFirstChild = pdfNameEl?.firstElementChild;
-            const rawPdfName = pdfFirstChild?.textContent?.trim()
-              || pdfNameEl?.textContent?.trim()
-              || '';
-            // Accept it only if it looks like a real filename (has a dot, isn't just "pdf")
+
+            /**
+             * Try to extract the PDF filename from a given element using multiple
+             * strategies. Claude's PDF cards don't always use .flex-col — the
+             * filename may be in a span, p, aria-label, img.alt, or title attr.
+             */
+            const extractPdfName = (root: Element): string => {
+              // 1. .flex-col — used by non-image file cards, sometimes also PDFs
+              const flexCol = root.querySelector('.flex-col');
+              if (flexCol) {
+                const candidate = flexCol.firstElementChild?.textContent?.trim()
+                  || flexCol.textContent?.trim() || '';
+                if (candidate && candidate.toLowerCase() !== 'pdf') return candidate;
+              }
+
+              // 2. Any element with a title attribute that looks like a filename
+              const titled = Array.from(root.querySelectorAll('[title]'))
+                .filter(e => !e.hasAttribute('data-tokenwise'))
+                .map(e => e.getAttribute('title')?.trim() || '')
+                .find(t => t.length > 1 && t.toLowerCase() !== 'pdf');
+              if (titled) return titled;
+
+              // 3. aria-label attributes
+              const ariaLabelled = Array.from(root.querySelectorAll('[aria-label]'))
+                .filter(e => !e.hasAttribute('data-tokenwise'))
+                .map(e => e.getAttribute('aria-label')?.trim() || '')
+                .find(t => t.length > 1 && t.toLowerCase() !== 'pdf');
+              if (ariaLabelled) return ariaLabelled;
+
+              // 4. img.alt or img.title (Claude may set these for accessibility)
+              const imgEl = root.querySelector('img');
+              if (imgEl?.alt && imgEl.alt.length > 1 && imgEl.alt.toLowerCase() !== 'pdf') {
+                return imgEl.alt.trim();
+              }
+              if (imgEl?.title && imgEl.title.length > 1 && imgEl.title.toLowerCase() !== 'pdf') {
+                return imgEl.title.trim();
+              }
+
+              // 5. Walk all text nodes — look for any that contain a dot (filename pattern)
+              //    Skip our own injected elements and pure "pdf" badge nodes
+              const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+              let node: Node | null;
+              while ((node = walker.nextNode())) {
+                const parent = node.parentElement;
+                if (parent?.hasAttribute('data-tokenwise')) continue;
+                if (parent?.tagName === 'IMG') continue;
+                const text = node.textContent?.trim() || '';
+                if (text.length > 1 && text.toLowerCase() !== 'pdf' && text.includes('.')) {
+                  return text;
+                }
+              }
+
+              return '';
+            };
+
+            // Try the element itself first
+            let rawPdfName = extractPdfName(el);
+
+            // Walk up ancestors if not found, stopping at the multi-thumbnail boundary
+            if (!rawPdfName || rawPdfName.toLowerCase() === 'pdf') {
+              const thumbnailSelector = '[data-testid="file-thumbnail"], [data-testid="image-thumbnail"]';
+              let ancestor: Element | null = el.parentElement;
+              while (ancestor && ancestor !== document.body) {
+                // Stop if this ancestor spans multiple file cards
+                if (ancestor.querySelectorAll(thumbnailSelector).length > 1) break;
+                rawPdfName = extractPdfName(ancestor);
+                if (rawPdfName && rawPdfName.toLowerCase() !== 'pdf') break;
+                ancestor = ancestor.parentElement;
+              }
+            }
+
+            // Normalise: accept if looks like a real filename
+            rawPdfName = rawPdfName.trim();
             if (rawPdfName && rawPdfName.toLowerCase() !== 'pdf' && rawPdfName.includes('.')) {
               fileName = rawPdfName;
             } else if (rawPdfName && rawPdfName.toLowerCase() !== 'pdf' && rawPdfName.length > 1) {
-              // name without extension — append .pdf
               fileName = rawPdfName + '.pdf';
             } else {
               fileName = 'document.pdf';
@@ -519,6 +679,7 @@ import {
         );
         estimates.push(estimate);
 
+        // Check processed marker before adding tooltip (estimate is already in array above)
         if (el.getAttribute('data-tokenwise-processed')) continue;
         el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
@@ -544,10 +705,43 @@ import {
   }
 
   /**
+   * Strip a duplicated extension badge suffix from a filename.
+   * Claude's .flex-col DOM concatenates the badge text (just the ext, no dot) directly
+   * onto the filename, producing doubled extensions like:
+   *   "README.mdmd"      (md  + md  = 4 chars after dot)
+   *   "report.xlsxxlsx" (xlsx + xlsx = 8 chars after dot)
+   *   "file.pdfpdf"     (pdf  + pdf  = 6 chars after dot)
+   *
+   * Detection: the text after the last dot is exactly 2× a valid extension string.
+   */
+  function stripBadgeSuffix(name: string): string {
+    const lastDot = name.lastIndexOf('.');
+    if (lastDot === -1) return name;
+
+    const afterDot = name.slice(lastDot + 1);
+    const totalLen = afterDot.length;
+
+    // Only consider lengths that could be a doubled extension (4–10 chars total)
+    // A single extension is 2–5 chars, so doubled is 4–10 chars
+    if (totalLen >= 4 && totalLen <= 10 && totalLen % 2 === 0) {
+      const half = totalLen / 2;
+      const first = afterDot.slice(0, half);
+      const second = afterDot.slice(half);
+      if (first === second) {
+        // Confirmed doubled suffix: return base + dot + single extension
+        return name.slice(0, lastDot + 1 + half);
+      }
+    }
+
+    return name;
+  }
+
+  /**
    * Map a filename's extension to a MIME type so detectFileCategory() works correctly.
    * Claude's DOM never exposes MIME types, so we infer from the file extension.
    */
   function inferMimeFromExtension(fileName: string): string {
+
     const ext = (fileName.match(/\.([a-z0-9]{2,5})(?:[\s\u200b]|$)/i)?.[1] ||
                  fileName.match(/\.([a-z0-9]{2,5})$/i)?.[1] || '').toLowerCase();
     const MAP: Record<string, string> = {

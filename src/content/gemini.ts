@@ -197,46 +197,82 @@ import {
     const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
     try {
-      // Try standard selectors first
-      let elements = safeQuerySelectorAll(CONFIG.messageSelector, document, CONFIG);
+      // Gemini uses Shadow DOM extensively. We must search across all shadow boundaries.
+      // We explicitly query for both assistant messages (`message-content`, `model-response`)
+      // and user messages (`user-query`).
+      const selector = `${CONFIG.messageSelector}, user-query, model-response`;
+      let elements = Array.from(document.querySelectorAll(selector));
+      elements.push(...findAllInShadowRoots(selector));
 
-      // If no results, search shadow DOM
+      // Fallback: alternating turn containers (no .response-container — too broad)
       if (elements.length === 0) {
-        elements = findAllInShadowRoots(CONFIG.messageSelector);
+        elements = Array.from(document.querySelectorAll('.turn-content, .query-content'));
+        elements.push(...findAllInShadowRoots('.turn-content, .query-content'));
       }
 
-      // Also try Gemini-specific turn-based structure
-      if (elements.length === 0) {
-        elements = findAllInShadowRoots('.conversation-turn, [class*="turn"]');
-      }
+      // ── Ancestor deduplication ──────────────────────────────────
+      // Remove any element that is a descendant of another matched element.
+      // This prevents double/triple counting when both an outer wrapper and
+      // an inner element are matched by the same selector list.
+      const deduped = elements.filter(
+        (el) => !elements.some((other) => other !== el && other.contains(el))
+      );
 
-      for (const el of elements) {
-        const content = el.textContent?.trim() || '';
-        if (!content) continue;
+      // ── Text-content deduplication ──────────────────────────────
+      // Gemini sometimes renders the same message-content element in both the
+      // light DOM and inside a user-query shadow/wrapper, causing cross-tree
+      // duplicates that `contains()` cannot detect. Deduplicate by text fingerprint.
+      const seenTexts = new Set<string>();
 
-        // Gemini uses "model" for assistant responses
-        const isModel = el.classList.contains('model-response-text')
+      for (const el of deduped) {
+        const rawContent = el.textContent?.trim() || '';
+        if (!rawContent) continue;
+
+        // Role detection: <message-content> is always a model (assistant) response.
+        // User turns live in <user-query> or a sibling with data-role="user".
+        const tag = el.tagName.toLowerCase();
+        const isModel = tag === 'message-content'
+          || el.classList.contains('model-response-text')
           || el.closest('[data-role="model"]') !== null
-          || el.tagName.toLowerCase() === 'message-content';
+          || el.closest('model-response') !== null;
+
+        const isUser = tag === 'user-query'
+          || el.closest('[data-role="user"]') !== null
+          || el.closest('user-query') !== null;
+
+        // Skip elements where we can't determine role to avoid mis-attribution
+        if (!isModel && !isUser) continue;
+
+        let content = rawContent;
+
+        if (isUser) {
+          // Gemini's user-query elements sometimes contain a "Gemini said\n\n<assistant text>"
+          // reflection prefix showing the previous assistant response in the turn context.
+          // Strip that prefix so only the actual human message text is counted.
+          const GEMINI_SAID_RE = /^Gemini said\s*\n+/i;
+          content = content.replace(GEMINI_SAID_RE, '').trim();
+
+          // After stripping, if the content is empty or identical to the previous
+          // assistant message, this element is purely a reflection — skip it.
+          if (!content) continue;
+
+          // If the remaining text exactly matches the last assistant message we already
+          // recorded (i.e., the whole user-query is just "Gemini said <response>"),
+          // skip it to avoid double-counting the response as a "user" message.
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content === content) continue;
+        }
+
+        // Text-fingerprint dedup: skip if we've already recorded this exact content.
+        // Use a 120-char prefix as fingerprint to handle minor whitespace differences.
+        const fingerprint = content.slice(0, 120);
+        if (seenTexts.has(fingerprint)) continue;
+        seenTexts.add(fingerprint);
 
         messages.push({
           role: isModel ? 'assistant' : 'user',
           content,
         });
-      }
-
-      // If still no messages found, try alternating pattern
-      if (messages.length === 0) {
-        const allTurns = findAllInShadowRoots('.turn-content, .response-container, .query-content');
-        for (let i = 0; i < allTurns.length; i++) {
-          const content = allTurns[i].textContent?.trim() || '';
-          if (content) {
-            messages.push({
-              role: i % 2 === 0 ? 'user' : 'assistant',
-              content,
-            });
-          }
-        }
       }
     } catch {
       // Fail silently
@@ -311,6 +347,38 @@ import {
       getMessages: () => extractGeminiMessages(),
       contextExportMaxTokens: 5000,
     });
+
+    // 💡 Tips toggle — re-opens the suggestion panel after dismissal
+    // Remove any existing tips bulb before re-adding so we don't duplicate.
+    const existingTipsBtn = widgetElement.querySelector('#tokenwise-opentips-btn');
+    if (existingTipsBtn) existingTipsBtn.remove();
+
+    if (suggestionPanel) {
+      const tipsBtn = document.createElement('button');
+      tipsBtn.id = 'tokenwise-opentips-btn';
+      tipsBtn.textContent = '💡';
+      tipsBtn.title = 'Show optimization tips';
+      Object.assign(tipsBtn.style, {
+        position: 'absolute',
+        top: '4px',
+        right: '28px',
+        background: 'none',
+        border: 'none',
+        color: '#888',
+        fontSize: '13px',
+        cursor: 'pointer',
+        padding: '2px 4px',
+        lineHeight: '1',
+      });
+      tipsBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+      tipsBtn.addEventListener('click', (e: Event) => {
+        e.stopPropagation();
+        const inputEl = findGeminiInput();
+        const text = inputEl ? getInputText(inputEl) : '';
+        suggestionPanel?.forceShow(text, currentAttachments);
+      });
+      widgetElement.appendChild(tipsBtn);
+    }
   }
 
   // ── Widget Drag ───────────────────────────────────────────────
@@ -468,12 +536,87 @@ import {
     chatObserver.observe(document.body, { childList: true, subtree: true });
   }
 
+  // ── Token Estimation Add-ons ──────────────────────────────────
+
+  /**
+   * Detect Gemini Canvas/App iframes and produce a conservative token-cost estimate.
+   */
+  function estimateIframeTokens(): number {
+    const REF_AREA = 720 * 488;
+    const REF_TOKENS = 800;
+    const MIN_TOKENS = 200;
+    const MIN_DIMENSION = 50;
+    
+    let total = 0;
+    try {
+      const iframes = Array.from(document.querySelectorAll('iframe'));
+      iframes.push(...findAllInShadowRoots('iframe'));
+      
+      for (const iframe of iframes) {
+        const htmlIframe = iframe as HTMLIFrameElement;
+        const w = htmlIframe.offsetWidth || 0;
+        const h = htmlIframe.offsetHeight || 0;
+        
+        if (w >= MIN_DIMENSION && h >= MIN_DIMENSION) {
+          const area = w * h;
+          total += Math.max(MIN_TOKENS, Math.round((area / REF_AREA) * REF_TOKENS));
+        }
+      }
+    } catch {
+      // Fail silently
+    }
+    return total;
+  }
+
+  /**
+   * Detect Gemini thinking/reasoning blocks that are outside message-content.
+   */
+  function estimateThinkingTokens(): number {
+    const selectors = [
+      'thought-chunk', 'thinking-block', '[class*="thinking"]', '[class*="thought-"]',
+      '[class*="-thought"]', '[data-thought]', '[class*="chain-of-thought"]',
+      '[class*="reasoning"]', '[class*="think-"]', '[class*="model-thoughts"]',
+      '[class*="thoughts-section"]', '[aria-label*="thought"]', '[aria-label*="thinking"]'
+    ].join(', ');
+    
+    let total = 0;
+    try {
+      const elements = Array.from(document.querySelectorAll(selectors));
+      elements.push(...findAllInShadowRoots(selectors));
+      
+      const deduped = elements.filter(
+        (el) => !elements.some((other) => other !== el && other.contains(el))
+      );
+      
+      for (const el of deduped) {
+        if (!el.closest('message-content')) {
+          const content = el.textContent?.trim() || '';
+          if (content) {
+            total += countTokens(content, MODEL).tokens;
+          }
+        }
+      }
+    } catch {
+      // Fail silently
+    }
+    return total;
+  }
+
   function scanConversation(): void {
     try {
       const messages = extractGeminiMessages();
       messageCount = messages.length;
       const messagesForCount: Message[] = messages.map(m => ({ role: m.role, content: m.content }));
-      conversationTokens = estimateConversationTokens(messagesForCount, MODEL);
+      
+      const baseTokens = estimateConversationTokens(messagesForCount, MODEL);
+      const iframeTokens = estimateIframeTokens();
+      const thinkingTokens = estimateThinkingTokens();
+      // Also run attachment detection inline so the count is current
+      detectAttachments();
+      const attachmentTokens = currentAttachments.reduce((sum, a) => sum + a.tokens, 0);
+      
+      conversationTokens = baseTokens + iframeTokens + thinkingTokens + attachmentTokens;
+      
       updateWidgetContent(currentInputTokens, conversationTokens + currentInputTokens);
       sendUpdate();
     } catch { /* fail silently */ }
@@ -488,29 +631,127 @@ import {
 
   function detectAttachments(): void {
     try {
-      let attachments = safeQuerySelectorAll(CONFIG.fileAttachmentSelector);
-      if (attachments.length === 0) {
-        attachments = findAllInShadowRoots(CONFIG.fileAttachmentSelector);
-      }
+      let rawAttachments = Array.from(document.querySelectorAll(CONFIG.fileAttachmentSelector));
+      rawAttachments.push(...findAllInShadowRoots(CONFIG.fileAttachmentSelector));
+
+      // ── Ancestor dedup ──────────────────────────────────────────────────────
+      // The selector matches BOTH the outer <uploader-file-preview> chip AND nested
+      // children inside it (<gem-media-attachment>, .file-preview-container, etc.).
+      // Without dedup, a single attached file is counted as 4–5 separate attachments.
+      // Keep only the outermost element in any parent→child chain.
+      const attachments = rawAttachments.filter(
+        (el) => !rawAttachments.some((other) => other !== el && other.contains(el))
+      );
+
       attachmentCount = attachments.length;
-      
       const estimates: FileEstimate[] = [];
 
       for (const el of attachments) {
-        const fileName = el.getAttribute('data-filename') || el.getAttribute('title') || el.textContent?.trim().slice(0, 100) || 'unknown';
+        const img = el.querySelector('img');
+
+        // ── Filename extraction: multi-step fallback ────────────────────────
+        let fileName = '';
+
+        // Step 1 — explicit data attribute (most reliable when present)
+        fileName = el.getAttribute('data-filename') || '';
+
+        // Step 2 — title / aria-label, but skip Gemini's generic placeholder values
+        if (!fileName) {
+          const t = el.getAttribute('title') || '';
+          if (t && t.toLowerCase() !== 'attachment') fileName = t;
+        }
+        if (!fileName) {
+          const a = el.getAttribute('aria-label') || '';
+          if (a && a.toLowerCase() !== 'attachment') fileName = a;
+        }
+
+        // Step 3 — img[alt]: Gemini sets alt="attachment" as a generic placeholder
+        // for ALL non-image (and even image) files. Only accept it if it looks like
+        // a real filename (contains a "." or is longer than a single word).
+        if (!fileName) {
+          const imgAlt = img?.getAttribute('alt') || '';
+          if (imgAlt && imgAlt.toLowerCase() !== 'attachment' &&
+              (imgAlt.includes('.') || imgAlt.length > 12)) {
+            fileName = imgAlt;
+          }
+        }
+
+        // Step 4 — inner label span: for non-image files Gemini renders the filename
+        // as visible text inside span.gem-attachment-content (or similar label spans).
+        if (!fileName) {
+          const labelEl = el.querySelector(
+            'span.gem-attachment-content, [class*="attachment-content"], ' +
+            '[class*="attachment-label"], [class*="attachment-name"]'
+          );
+          if (labelEl) {
+            const labelText = (labelEl as HTMLElement).innerText?.trim() ||
+                              labelEl.textContent?.trim() || '';
+            // Reject lines that contain "tokens" — that is our own injected tooltip text
+            if (labelText && !labelText.includes('tokens') && labelText.length < 200) {
+              fileName = labelText;
+            }
+          }
+        }
+
+        // Step 5 — attachment-container <type> class: Gemini sometimes adds a semantic
+        // type suffix, e.g. "attachment-container pdf", "attachment-container video".
+        if (!fileName) {
+          const containerEl = el.querySelector('[class*="attachment-container"]');
+          const containerClass = (containerEl?.className || '').toString();
+          const typeMatch = containerClass.match(/attachment-container[- _](\w+)/);
+          const hint = (typeMatch?.[1] || '').toLowerCase();
+          const hintExtMap: Record<string, string> = {
+            pdf: 'document.pdf', video: 'video.mp4', audio: 'audio.mp3',
+            spreadsheet: 'spreadsheet.xlsx', presentation: 'presentation.pptx',
+            document: 'document.docx', text: 'file.txt',
+          };
+          if (hint && hint !== 'unknown' && hintExtMap[hint]) {
+            fileName = hintExtMap[hint];
+          }
+        }
+
+        // Step 6 — img src: blob URL confirms a file was uploaded; use as last
+        // resort to at least identify images.
+        if (!fileName && img?.src) {
+          const src = img.src.toLowerCase();
+          if (src.startsWith('blob:') || src.includes('image')) {
+            fileName = 'image.jpg';
+          } else if (src.includes('pdf')) {
+            fileName = 'document.pdf';
+          } else {
+            fileName = 'attachment';
+          }
+        }
+
+        // Step 7 — textContent fallback: strip our own injected tooltip nodes first
+        // (they have data-tokenwise="true") so we don't read back the text we wrote.
+        if (!fileName) {
+          const ownText = Array.from(el.querySelectorAll('[data-tokenwise]'))
+            .map((n) => n.textContent || '').join('');
+          let raw = (el.textContent || '').trim();
+          if (ownText) raw = raw.replace(ownText, '').trim();
+          // Strip any remaining "… tokens" fragments from our formatting
+          raw = raw.replace(/[^\n]*\d+\s*tokens[^\n]*/gi, '').trim();
+          fileName = raw.slice(0, 100) || 'attachment';
+        }
+
         const fileSize = parseInt(el.getAttribute('data-filesize') || '0', 10);
         const fileType = el.getAttribute('data-filetype') || '';
-        const img = el.querySelector('img');
-        const estimate = estimateFileTokens(fileName, fileSize, fileType, img?.naturalWidth || 0, img?.naturalHeight || 0);
+
+        // Use naturalWidth/Height first (accurate), fall back to offsetWidth/Height
+        const imgW = img ? (img.naturalWidth || img.offsetWidth || 0) : 0;
+        const imgH = img ? (img.naturalHeight || img.offsetHeight || 0) : 0;
+
+        const estimate = estimateFileTokens(fileName, fileSize, fileType, imgW, imgH);
         estimates.push(estimate);
 
         if (el.getAttribute('data-tokenwise-processed')) continue;
         el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
       }
-      
+
       currentAttachments = estimates;
-      
+
       if (showSuggestions && suggestionPanel) {
         const inputEl = findGeminiInput();
         const text = inputEl ? getInputText(inputEl) : '';

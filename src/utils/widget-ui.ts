@@ -20,10 +20,12 @@ export interface WidgetWarningOptions {
   siteLabel: string;
   inputTokens: number;
   totalTokens: number;
+  /** Estimated tokens from sandboxed artifact iframes (e.g. claudemcpcontent.com). */
+  artifactTokens?: number;
   warningThreshold: number;
   criticalThreshold: number;
   getMessages: () => ExportMessage[];
-  contextExportMaxTokens: number;
+  contextExportMaxTokens?: number;
 }
 
 /**
@@ -56,6 +58,11 @@ export function renderWidgetBody(
 
   appendStatLine(widget, insertBefore, 'Current message:', options.inputTokens);
   appendStatLine(widget, insertBefore, 'Full request cost:', options.totalTokens);
+
+  // Show artifact overhead as a separate amber line when detected
+  if (options.artifactTokens && options.artifactTokens > 0) {
+    appendArtifactLine(widget, insertBefore, options.artifactTokens);
+  }
 
   if (options.totalTokens > options.criticalThreshold) {
     appendWarning(
@@ -95,6 +102,30 @@ function appendStatLine(
   valueEl.textContent = `~${tokens.toLocaleString()} tokens`;
   valueEl.style.fontWeight = '600';
   valueEl.style.color = getTokenColor(tokens);
+  line.appendChild(labelEl);
+  line.appendChild(valueEl);
+  widget.insertBefore(line, insertBefore);
+}
+
+function appendArtifactLine(
+  widget: HTMLElement,
+  insertBefore: Node | null,
+  tokens: number
+): void {
+  const line = document.createElement('div');
+  Object.assign(line.style, {
+    display: 'flex',
+    justifyContent: 'space-between',
+    marginBottom: '4px',
+    marginTop: '2px',
+  });
+  const labelEl = document.createElement('span');
+  labelEl.textContent = '⚡ Artifact (est.)';
+  labelEl.style.color = '#c4a818';
+  const valueEl = document.createElement('span');
+  valueEl.textContent = `~${tokens.toLocaleString()} tokens`;
+  valueEl.style.fontWeight = '600';
+  valueEl.style.color = '#facc15';
   line.appendChild(labelEl);
   line.appendChild(valueEl);
   widget.insertBefore(line, insertBefore);

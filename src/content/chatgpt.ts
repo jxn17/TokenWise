@@ -445,30 +445,20 @@ import {
       const estimates: FileEstimate[] = [];
 
       for (const el of attachments) {
-        // Extract metadata from DOM attributes
-        let fileName = el.getAttribute('data-filename') || el.getAttribute('title');
-        let fileSizeStr = el.getAttribute('data-filesize') || '';
-        const fileType = el.getAttribute('data-filetype') || '';
+        // ChatGPT exposes the filename in aria-label (e.g. aria-label="BD-3487.jpg").
+        // data-filename / data-filesize / data-filetype do NOT exist in ChatGPT's DOM.
+        let fileName = el.getAttribute('aria-label') || el.getAttribute('title');
+        let fileSizeStr = '';     // file size is not available in ChatGPT's DOM
+        const fileType = '';      // not exposed; estimateFileTokens infers from extension
 
-        // Fallback to textContent parsing if attributes are missing
-        if (!fileName || !fileSizeStr) {
+        // Fallback: parse textContent for a filename with an extension
+        if (!fileName) {
           const text = el.textContent?.trim() || '';
           
           // Try to extract filename (e.g. anything with an extension)
           const nameMatch = text.match(/[\w\s-]+\.[a-zA-Z0-9]{2,4}\b/);
-          if (!fileName && nameMatch) {
+          if (nameMatch) {
             fileName = nameMatch[0];
-          }
-
-          // Try to extract file size (e.g. 12.4 KB, 1.2 MB)
-          const sizeMatch = text.match(/(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)/i);
-          if (!fileSizeStr && sizeMatch) {
-            const val = parseFloat(sizeMatch[1]);
-            const unit = sizeMatch[2].toUpperCase();
-            if (unit === 'KB') fileSizeStr = String(val * 1024);
-            else if (unit === 'MB') fileSizeStr = String(val * 1024 * 1024);
-            else if (unit === 'GB') fileSizeStr = String(val * 1024 * 1024 * 1024);
-            else fileSizeStr = String(val);
           }
 
           if (!fileName) {

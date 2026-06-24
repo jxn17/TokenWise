@@ -89,8 +89,9 @@ export function estimateFileTokens(
   switch (category) {
     case 'text': {
       if (safeSize === 0) {
-        estimatedTokens = 200;
-        tip = 'Text file: ~200 tokens (size unknown — estimate may vary).';
+        // Can't estimate without reading file contents — show a caution
+        estimatedTokens = -1;
+        tip = '⚠️ Text/Markdown token cost depends on content length and cannot be estimated.';
       } else {
         estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
         const kbSize = Math.round(safeSize / 1024);
@@ -105,8 +106,9 @@ export function estimateFileTokens(
 
     case 'spreadsheet': {
       if (safeSize === 0) {
-        estimatedTokens = 500;
-        tip = 'Spreadsheet: ~500 tokens (size unknown — actual cost depends on row/column count).';
+        // Can't estimate without file contents — show a caution instead of a made-up number
+        estimatedTokens = -1;
+        tip = '⚠️ Spreadsheet token cost depends on row/column count and cannot be estimated.';
       } else {
         estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
         tip = `Spreadsheet (~${estimatedTokens.toLocaleString()} tokens). Export only used sheets/columns.`;

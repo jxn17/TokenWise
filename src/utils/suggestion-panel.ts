@@ -247,7 +247,13 @@ function renderAttachmentSection(panel: HTMLElement, attachments: FileEstimate[]
 
     const tokenEl = document.createElement('span');
     if (file.estimatedTokens === -1) {
-      tokenEl.textContent = file.category === 'audio' ? '⚠️ Not supported' : '⚠️ Varies';
+      if (file.category === 'audio') {
+        tokenEl.textContent = '⚠️ Not supported';
+      } else if (file.category === 'video') {
+        tokenEl.textContent = '⚠️ Varies';
+      } else {
+        tokenEl.textContent = '⚠️ Caution';
+      }
       tokenEl.style.color = '#fb923c'; // orange — warning, not error
     } else {
       tokenEl.textContent = `~${file.estimatedTokens.toLocaleString()} tokens`;

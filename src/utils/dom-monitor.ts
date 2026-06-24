@@ -33,7 +33,7 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
     userRole: 'user',
     shadowDom: false,
     chatContainerSelector: '[role="presentation"] .flex.flex-col, main .flex.flex-col',
-    fileAttachmentSelector: '[data-testid="attachment"], .file-attachment, [class*="attachment"], [class*="file-pill"], [class*="uploaded-file"]',
+    fileAttachmentSelector: 'div[role="group"][aria-label][class*="file-tile"], div[role="group"][class*="file-tile"], [class*="file-tile"][class*="text-token-text-primary"]',
     hostname: 'chat.openai.com',
   },
 
@@ -51,13 +51,17 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
 
   gemini: {
     inputSelector: '.ql-editor, [contenteditable="true"].textarea, rich-textarea .ql-editor',
-    messageSelector: 'message-content, .model-response-text, .response-container',
+    // Only target the <message-content> custom element — the authoritative Gemini turn element.
+    // DO NOT add .response-container or .model-response-text: those match nested children AND
+    // ancestor wrapper divs of <message-content>, causing each response to be counted 3×.
+    messageSelector: 'message-content',
     sendButtonSelector: 'button.send-button, button[aria-label="Send message"], .send-button-container button',
     assistantRole: 'model',
     userRole: 'user',
     shadowDom: true,
     chatContainerSelector: '.conversation-container, [class*="conversation"]',
-    fileAttachmentSelector: '.file-chip, [class*="attachment"], .upload-chip',
+    // Use only specific chip selectors to avoid matching the entire message or UI elements.
+    fileAttachmentSelector: 'uploader-file-preview, gem-media-attachment, .file-preview-chip, .file-preview-container, .gem-attachment-tile',
     hostname: 'gemini.google.com',
   },
 };
@@ -526,6 +530,35 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
         role: isClaudeUserMessage(el) ? 'user' : 'assistant',
         content,
       });
+    }
+
+    // Strategy 3: recover .standard-markdown blocks that are siblings (not children)
+    // of the captured elements.  Claude wraps some rich-formatted content
+    // (tables, annotated code sections, step-by-step explanations) in
+    // .standard-markdown divs that live *outside* .font-claude-response in the DOM.
+    // Without this pass, those blocks are silently skipped and their tokens are lost.
+    try {
+      const capturedEls = Array.from(document.querySelectorAll(selector));
+      const markdownEls = Array.from(document.querySelectorAll('.standard-markdown'));
+
+      for (const mdEl of markdownEls) {
+        // Skip if already contained inside a captured element (already counted)
+        const alreadyCaptured = capturedEls.some(captured => captured.contains(mdEl));
+        if (alreadyCaptured) continue;
+
+        const content = mdEl.textContent?.trim() || '';
+        if (!content) continue;
+
+        // Append to the last assistant message if one exists, otherwise push new
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg && lastMsg.role === 'assistant') {
+          lastMsg.content += '\n' + content;
+        } else {
+          messages.push({ role: 'assistant', content });
+        }
+      }
+    } catch {
+      // Fail silently
     }
   } catch {
     // Fail silently if DOM structure has changed
