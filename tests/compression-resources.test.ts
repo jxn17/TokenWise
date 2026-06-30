@@ -8,18 +8,25 @@ describe('compression-resources', () => {
     expect(tools[0].name).toBe('Squoosh');
   });
 
-  it('should return correct tool for video category', () => {
+  it('should return Gemini for video category', () => {
     const tools = getCompressionResources('video');
     expect(tools).toBeDefined();
     expect(tools.length).toBeGreaterThan(0);
-    expect(tools[0].name).toBe('HandBrake');
+    expect(tools[0].name).toBe('Gemini');
+  });
+
+  it('should return Gemini for audio category', () => {
+    const tools = getCompressionResources('audio');
+    expect(tools).toBeDefined();
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools[0].name).toBe('Gemini');
   });
 
   it('should return correct tool for pdf category', () => {
     const tools = getCompressionResources('pdf');
     expect(tools).toBeDefined();
     expect(tools.length).toBeGreaterThan(0);
-    expect(tools[0].name).toBe('Adobe Acrobat compress');
+    expect(tools[0].name).toBe('Adobe Acrobat');
   });
 
   it('should return fallback tools for unknown category', () => {

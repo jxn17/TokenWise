@@ -15,7 +15,7 @@ describe('media-estimator', () => {
       const estimate = estimateFileTokens('video.mp4', 5 * 1024 * 1024, 'video/mp4');
       expect(estimate.category).toBe('video');
       expect(estimate.estimatedTokens).toBe(-1); // Unknown token cost for large videos without duration
-      expect(estimate.optimizationTips[0]).toMatch(/Extract transcript and paste only the relevant section/);
+      expect(estimate.optimizationTips[0]).toMatch(/Gemini natively supports video/);
     });
 
     it('should estimate tokens for spreadsheets and documents', () => {
@@ -31,8 +31,8 @@ describe('media-estimator', () => {
     it('should identify code and text files correctly', () => {
       const md = estimateFileTokens('readme.md', 10000, 'text/markdown');
       expect(md.category).toBe('text');
-      // ~4 chars per token for text -> 2500
-      expect(md.estimatedTokens).toBeCloseTo(10000 / 4, -3);
+      // ~3.8 chars per token for text -> ceil(10000 / 3.8) = 2632
+      expect(md.estimatedTokens).toBe(Math.ceil(10000 / 3.8));
     });
   });
 

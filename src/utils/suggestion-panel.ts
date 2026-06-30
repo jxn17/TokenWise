@@ -273,8 +273,8 @@ function renderAttachmentSection(panel: HTMLElement, attachments: FileEstimate[]
       row.appendChild(tipEl);
     }
 
-    // Compression tools — skip for audio (unsupported by Claude anyway)
-    if (file.category !== 'audio') {
+    // Compression / handling tools
+    {
       const resources = getCompressionResources(file.category)
         .filter(r => !r.name.includes('7-Zip') || file.category === 'archive')
         .slice(0, 2);
@@ -307,20 +307,37 @@ function getCategoryIcon(category: string): string {
 }
 
 function createResourceLink(resource: CompressionResource): HTMLElement {
-  const link = document.createElement('button');
-  link.textContent = resource.name;
-  Object.assign(link.style, {
-    background: 'rgba(99,102,241,0.15)',
-    border: '1px solid rgba(99,102,241,0.3)',
-    color: '#a5b4fc',
-    borderRadius: '4px',
-    padding: '2px 6px',
-    fontSize: '10px',
-    cursor: 'pointer',
-  });
-  link.title = resource.description;
-  link.addEventListener('click', () => openCompressionResource(resource.url));
-  return link;
+  const isAdviceOnly = !resource.url;
+
+  const el = document.createElement(isAdviceOnly ? 'span' : 'button');
+  el.textContent = resource.name;
+  el.title = resource.description;
+
+  if (isAdviceOnly) {
+    Object.assign(el.style, {
+      background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      color: '#8888b0',
+      borderRadius: '4px',
+      padding: '2px 6px',
+      fontSize: '10px',
+      cursor: 'default',
+      fontStyle: 'italic',
+    });
+  } else {
+    Object.assign(el.style, {
+      background: 'rgba(99,102,241,0.15)',
+      border: '1px solid rgba(99,102,241,0.3)',
+      color: '#a5b4fc',
+      borderRadius: '4px',
+      padding: '2px 6px',
+      fontSize: '10px',
+      cursor: 'pointer',
+    });
+    el.addEventListener('click', () => openCompressionResource(resource.url));
+  }
+
+  return el;
 }
 
 function createSuggestionRow(

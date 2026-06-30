@@ -14,6 +14,7 @@ import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate 
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
 import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
+import { createEducationPanelController, type EducationPanelController } from '../utils/token-education';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -48,6 +49,7 @@ import {
   let widgetVisible = true;
   let showSuggestions = true;
   let ghostText: GhostTextController | null = null;
+  let educationPanel: EducationPanelController | null = null;
 
   // ── Initialization ────────────────────────────────────────────
 
@@ -63,6 +65,7 @@ import {
       if (showSuggestions) {
         initSuggestionPanel();
       }
+      initEducationPanel();
       initGhostText();
 
       await waitForGeminiInput(15000);
@@ -379,6 +382,40 @@ import {
       });
       widgetElement.appendChild(tipsBtn);
     }
+
+    // 📚 Education toggle — opens the token facts panel
+    // Remove any existing education btn before re-adding so we don't duplicate.
+    const existingEduBtn = widgetElement.querySelector('#tokenwise-education-btn');
+    if (existingEduBtn) existingEduBtn.remove();
+
+    const eduBtn = document.createElement('button');
+    eduBtn.id = 'tokenwise-education-btn';
+    eduBtn.textContent = '📚';
+    eduBtn.title = 'Token facts & education';
+    Object.assign(eduBtn.style, {
+      position: 'absolute',
+      top: '4px',
+      right: '48px',
+      background: 'none',
+      border: 'none',
+      color: '#888',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      lineHeight: '1',
+    });
+    eduBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    eduBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      if (educationPanel) {
+        if (educationPanel.isVisible()) {
+          educationPanel.hide();
+        } else {
+          educationPanel.show('gemini');
+        }
+      }
+    });
+    widgetElement.appendChild(eduBtn);
   }
 
   // ── Widget Drag ───────────────────────────────────────────────
@@ -467,6 +504,14 @@ import {
     if (showSuggestions) {
       suggestionPanel.create();
     }
+  }
+
+  // ── Education Panel ────────────────────────────────────────────
+
+  function initEducationPanel(): void {
+    if (educationPanel) return;
+    educationPanel = createEducationPanelController();
+    educationPanel.create();
   }
 
   // ── Gemini Input Finder ───────────────────────────────────────
@@ -613,7 +658,11 @@ import {
       const thinkingTokens = estimateThinkingTokens();
       // Also run attachment detection inline so the count is current
       detectAttachments();
-      const attachmentTokens = currentAttachments.reduce((sum, a) => sum + a.tokens, 0);
+      // Guard: estimatedTokens can be -1 (unknown) — treat those as 0 to avoid NaN
+      const attachmentTokens = currentAttachments.reduce(
+        (sum, a) => sum + Math.max(0, a.estimatedTokens),
+        0
+      );
       
       conversationTokens = baseTokens + iframeTokens + thinkingTokens + attachmentTokens;
       
@@ -624,15 +673,142 @@ import {
 
   // ── File Detection ────────────────────────────────────────────
 
+  /**
+   * Walk up from the Gemini input element to find its enclosing composer
+   * container — the element that wraps the text box AND pending file chips,
+   * but is NOT part of the scrollable chat history.
+   *
+   * Gemini uses Shadow DOM, so we climb the regular DOM from wherever the
+   * input is found. We stop at the first ancestor whose tag or class looks
+   * like a composer wrapper (rich-textarea, input-area, form, fieldset, or
+   * a known Gemini wrapper class). Falls back to 6 ancestor levels if no
+   * semantic boundary is found.
+   */
+  function findGeminiComposerContainer(): Element {
+    const inputEl = findGeminiInput();
+    if (!inputEl) return document.body;
+
+    const composerTags = new Set(['form', 'fieldset', 'rich-textarea', 'input-area']);
+    const composerClassHints = [
+      'input-area', 'composer', 'chat-input', 'prompt-input',
+      'input-container', 'message-input', 'query-box',
+    ];
+
+    let ancestor: Element | null = inputEl.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      const tag = ancestor.tagName.toLowerCase();
+      if (composerTags.has(tag)) return ancestor;
+      const cls = (ancestor.className || '').toString().toLowerCase();
+      if (composerClassHints.some(hint => cls.includes(hint))) return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+
+    // Fallback: walk up a fixed number of levels from the input
+    let fallback: Element = inputEl;
+    for (let i = 0; i < 8 && fallback.parentElement && fallback.parentElement !== document.body; i++) {
+      fallback = fallback.parentElement;
+    }
+    return fallback;
+  }
+
   function setupFileDetection(): void {
     const fileObserver = createDebouncedObserver(() => { detectAttachments(); }, 500);
     fileObserver.observe(document.body, { childList: true, subtree: true });
   }
 
+  /**
+   * Infer a MIME type string from visual cues on a Gemini attachment chip.
+   * Checks class names, icon elements, badge/label text, and thumbnail type
+   * in priority order. Returns empty string if nothing conclusive is found.
+   */
+  function inferGeminiMimeFromChip(el: Element): string {
+    const fullClass = (el.className || '').toString().toLowerCase();
+    const innerHTML = el.innerHTML?.toLowerCase() ?? '';
+
+    // ── 1. Embedded thumbnail <img> with a real src → image
+    const img = el.querySelector('img');
+    if (img) {
+      const src = img.getAttribute('src') || '';
+      const alt = (img.getAttribute('alt') || '').toLowerCase();
+      if (src.startsWith('blob:') || src.startsWith('data:image/')) return 'image/jpeg';
+      // A real src that isn't a generic placeholder → treat as image
+      if (src && alt !== 'attachment') return 'image/jpeg';
+    }
+
+    // ── 2. Class names on the chip itself
+    if (fullClass.includes('pdf')) return 'application/pdf';
+    if (fullClass.includes('video')) return 'video/mp4';
+    if (fullClass.includes('audio')) return 'audio/mpeg';
+    if (fullClass.includes('spreadsheet') || fullClass.includes('excel') || fullClass.includes('sheet'))
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (fullClass.includes('presentation') || fullClass.includes('slide'))
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    if (fullClass.includes('document') || fullClass.includes('word') || fullClass.includes('doc'))
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (fullClass.includes('text') || fullClass.includes('code')) return 'text/plain';
+    if (fullClass.includes('image') || fullClass.includes('photo') || fullClass.includes('picture'))
+      return 'image/jpeg';
+
+    // ── 3. Icon element class names (Gemini uses mat-icon / material-icons)
+    const iconEl = el.querySelector('mat-icon, .material-icons, [class*="icon"], [class*="file-icon"]');
+    if (iconEl) {
+      const iconText = (iconEl.textContent || '').trim().toLowerCase();
+      const iconClass = (iconEl.className || '').toString().toLowerCase();
+      const combined = iconText + ' ' + iconClass;
+      if (combined.includes('picture') || combined.includes('image') || combined.includes('photo'))
+        return 'image/jpeg';
+      if (combined.includes('pdf')) return 'application/pdf';
+      if (combined.includes('video')) return 'video/mp4';
+      if (combined.includes('audio') || combined.includes('music')) return 'audio/mpeg';
+      if (combined.includes('spreadsheet') || combined.includes('table_chart') || combined.includes('grid'))
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      if (combined.includes('slides') || combined.includes('present'))
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      if (combined.includes('description') || combined.includes('article') || combined.includes('doc'))
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      if (combined.includes('code') || combined.includes('text_snippet') || combined.includes('terminal'))
+        return 'text/plain';
+    }
+
+    // ── 4. Visible badge / label text
+    const badgeEl = el.querySelector('[class*="badge"], [class*="type-label"], [class*="format"]');
+    if (badgeEl) {
+      const badgeText = (badgeEl.textContent || '').trim().toLowerCase();
+      if (badgeText === 'pdf') return 'application/pdf';
+      if (badgeText === 'mp4' || badgeText === 'video') return 'video/mp4';
+      if (badgeText === 'mp3' || badgeText === 'audio') return 'audio/mpeg';
+      if (badgeText === 'xlsx' || badgeText === 'csv')
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      if (badgeText === 'pptx')
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      if (badgeText === 'docx' || badgeText === 'doc')
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+
+    // ── 5. innerHTML keyword scan as last resort
+    if (innerHTML.includes('"pdf"') || innerHTML.includes("'pdf'")) return 'application/pdf';
+
+    return '';
+  }
+
   function detectAttachments(): void {
     try {
-      let rawAttachments = Array.from(document.querySelectorAll(CONFIG.fileAttachmentSelector));
-      rawAttachments.push(...findAllInShadowRoots(CONFIG.fileAttachmentSelector));
+      // ── Scope to the composer draft area only ─────────────────────────
+      // Using document.body or findAllInShadowRoots(document.body) would also
+      // match file chips inside sent chat-history messages, producing phantom
+      // attachments when nothing is currently attached in the composer.
+      const composerRoot = findGeminiComposerContainer();
+
+      let rawAttachments: Element[];
+      if (composerRoot) {
+        rawAttachments = Array.from(composerRoot.querySelectorAll(CONFIG.fileAttachmentSelector));
+        // Also search shadow roots WITHIN the composer container only
+        rawAttachments.push(...findAllInShadowRoots(CONFIG.fileAttachmentSelector, composerRoot as HTMLElement));
+      } else {
+        // Fallback: full-document search (original behaviour)
+        rawAttachments = Array.from(document.querySelectorAll(CONFIG.fileAttachmentSelector));
+        rawAttachments.push(...findAllInShadowRoots(CONFIG.fileAttachmentSelector));
+      }
 
       // ── Ancestor dedup ──────────────────────────────────────────────────────
       // The selector matches BOTH the outer <uploader-file-preview> chip AND nested
@@ -647,7 +823,7 @@ import {
       const estimates: FileEstimate[] = [];
 
       for (const el of attachments) {
-        const img = el.querySelector('img');
+        const img = el.querySelector('img') as HTMLImageElement | null;
 
         // ── Filename extraction: multi-step fallback ────────────────────────
         let fileName = '';
@@ -718,8 +894,6 @@ import {
             fileName = 'image.jpg';
           } else if (src.includes('pdf')) {
             fileName = 'document.pdf';
-          } else {
-            fileName = 'attachment';
           }
         }
 
@@ -732,22 +906,43 @@ import {
           if (ownText) raw = raw.replace(ownText, '').trim();
           // Strip any remaining "… tokens" fragments from our formatting
           raw = raw.replace(/[^\n]*\d+\s*tokens[^\n]*/gi, '').trim();
-          fileName = raw.slice(0, 100) || 'attachment';
+          fileName = raw.slice(0, 100);
         }
 
         const fileSize = parseInt(el.getAttribute('data-filesize') || '0', 10);
-        const fileType = el.getAttribute('data-filetype') || '';
+
+        // ── MIME type inference ─────────────────────────────────────────────
+        // Prefer an explicit data-filetype attribute. If that's absent AND the
+        // filename has no recognisable extension, derive the type from visual
+        // cues on the chip (class names, badge text, img presence) so
+        // estimateFileTokens() can return a meaningful estimate instead of the
+        // generic 300-token fallback.
+        let fileType = el.getAttribute('data-filetype') || '';
+        if (!fileType) {
+          const hasKnownExtension = /\.[a-zA-Z0-9]{2,5}$/.test(fileName);
+          if (!hasKnownExtension) {
+            fileType = inferGeminiMimeFromChip(el);
+          }
+        }
 
         // Use naturalWidth/Height first (accurate), fall back to offsetWidth/Height
         const imgW = img ? (img.naturalWidth || img.offsetWidth || 0) : 0;
         const imgH = img ? (img.naturalHeight || img.offsetHeight || 0) : 0;
 
-        const estimate = estimateFileTokens(fileName, fileSize, fileType, imgW, imgH);
+        const estimate = estimateFileTokens(fileName || 'attachment', fileSize, fileType, imgW, imgH);
         estimates.push(estimate);
 
         if (el.getAttribute('data-tokenwise-processed')) continue;
         el.setAttribute('data-tokenwise-processed', 'true');
         addFileTooltip(el, estimate);
+
+        // If img hasn't loaded yet, re-run once it does to get real dimensions
+        if (img && !img.complete) {
+          img.addEventListener('load', () => {
+            el.removeAttribute('data-tokenwise-processed');
+            detectAttachments();
+          }, { once: true });
+        }
       }
 
       currentAttachments = estimates;

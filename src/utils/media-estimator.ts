@@ -62,7 +62,7 @@ const AUDIO_EXTENSIONS = new Set([
   '.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a',
 ]);
 
-const CHARS_PER_TOKEN_TEXT = 4;
+const CHARS_PER_TOKEN_TEXT = 3.8;
 const TOKENS_PER_KB_PDF = 250;
 const TOKENS_PER_KB_DOC = 200;
 const TOKENS_PER_KB_PPT = 150;
@@ -111,9 +111,9 @@ export function estimateFileTokens(
         tip = '⚠️ Spreadsheet token cost depends on row/column count and cannot be estimated.';
       } else {
         estimatedTokens = Math.ceil(safeSize / CHARS_PER_TOKEN_TEXT);
-        tip = `Spreadsheet (~${estimatedTokens.toLocaleString()} tokens). Export only used sheets/columns.`;
+        tip = `Spreadsheet (~${estimatedTokens.toLocaleString()} tokens). Export as CSV with only needed columns.`;
       }
-      optimizationTips.push('Export a CSV with only required columns');
+      optimizationTips.push('Export a CSV with only required columns — models read CSV natively');
       optimizationTips.push('Delete empty rows and hidden sheets before attaching');
       optimizationTips.push('Summarize aggregates in text instead of uploading raw data');
       break;
@@ -190,21 +190,20 @@ export function estimateFileTokens(
 
     case 'video': {
       // Token cost is impossible to estimate without knowing duration.
-      // Claude samples ~1 frame/sec; each frame costs ~170–765 tokens depending on resolution.
+      // Models sample ~1 frame/sec; each frame costs ~170–765 tokens depending on resolution.
       estimatedTokens = -1;
       tip = '⚠️ Video: cost varies by duration (~170–765 tokens/sampled frame). Keep clips short.';
-      optimizationTips.push('Extract transcript and paste only the relevant section');
-      optimizationTips.push('Claude samples ~1 frame/sec — shorter clips cost far fewer tokens');
+      optimizationTips.push('Gemini natively supports video — consider using it for video input');
+      optimizationTips.push('Keep clips short — models sample ~1 frame/sec');
       break;
     }
 
     case 'audio': {
-      // Claude's API does NOT accept audio files — they are rejected at upload.
-      // No token estimate is meaningful; show a clear warning instead.
+      // Most chat UIs don't support audio natively; Gemini does.
       estimatedTokens = -1;
-      tip = '⚠️ Claude cannot process audio files. Remove this and paste a transcript instead.';
-      optimizationTips.push('Use Whisper or Google Speech to transcribe the audio locally');
-      optimizationTips.push('Paste only the relevant excerpt of the transcript');
+      tip = '⚠️ Audio support varies by model. Gemini supports audio natively — use it for best results.';
+      optimizationTips.push('Gemini natively supports audio — consider using it for audio input');
+      optimizationTips.push('Otherwise, transcribe with Whisper and paste only the relevant excerpt');
       break;
     }
 
@@ -257,7 +256,7 @@ export function detectURLs(text: string): URLEstimate[] {
       estimates.push({
         url,
         type: 'general',
-        tip: 'URLs may scrape full page content. Paste only the section you need.',
+        tip: 'URLs may scrape full page content. Use r.jina.ai/<url> for clean text, or paste only the section you need.',
       });
     }
   }

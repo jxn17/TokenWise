@@ -14,6 +14,7 @@ import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate 
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
 import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
+import { createEducationPanelController, type EducationPanelController } from '../utils/token-education';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -55,6 +56,7 @@ import {
   let composerWatcher: DebouncedObserver | null = null;
   let currentAttachments: FileEstimate[] = [];
   let ghostText: GhostTextController | null = null;
+  let educationPanel: EducationPanelController | null = null;
 
   const suggestionPanel = createSuggestionPanelController(
     {
@@ -93,6 +95,7 @@ import {
       if (showSuggestions) {
         suggestionPanel.create();
       }
+      initEducationPanel();
       initGhostText();
       setupComposerWatcher();
 
@@ -251,6 +254,36 @@ import {
     });
     widgetElement.appendChild(tipsBtn);
 
+    // 📚 Education toggle — opens the token facts panel
+    const eduBtn = document.createElement('button');
+    eduBtn.id = 'tokenwise-education-btn';
+    eduBtn.textContent = '📚';
+    eduBtn.title = 'Token facts & education';
+    Object.assign(eduBtn.style, {
+      position: 'absolute',
+      top: '4px',
+      right: '48px',
+      background: 'none',
+      border: 'none',
+      color: '#888',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      lineHeight: '1',
+    });
+    eduBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    eduBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      if (educationPanel) {
+        if (educationPanel.isVisible()) {
+          educationPanel.hide();
+        } else {
+          educationPanel.show('claude');
+        }
+      }
+    });
+    widgetElement.appendChild(eduBtn);
+
     widgetElement.addEventListener('mousedown', startDrag);
     restoreWidgetPosition();
     document.body.appendChild(widgetElement);
@@ -367,6 +400,14 @@ import {
       ghostText?.onInput(text);
       sendUpdate();
     } catch (e) { await reportError(SITE, 'INPUT_CHANGE_FAILED', 'Failed to handle input change', undefined, e instanceof Error ? e : undefined); }
+  }
+
+  // ── Education Panel ────────────────────────────────────────────
+
+  function initEducationPanel(): void {
+    if (educationPanel) return;
+    educationPanel = createEducationPanelController();
+    educationPanel.create();
   }
 
   function initGhostText(): void {

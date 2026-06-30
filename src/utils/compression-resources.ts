@@ -1,5 +1,11 @@
 /**
- * Curated compression tool links — static strings only.
+ * Curated handling-tool links for file attachments.
+ *
+ * For compressible types (image, pdf) these point to real compression websites.
+ * For audio/video they point to Gemini, which natively supports those media types.
+ * For document/spreadsheet/text they are advice-only (empty url) rendered as
+ * plain text in the suggestion panel.
+ *
  * URLs open only on explicit user click; never fetched automatically.
  */
 
@@ -38,49 +44,49 @@ const RESOURCES: Record<CompressionCategory, CompressionResource[]> = {
   ],
   video: [
     {
-      name: 'HandBrake',
-      url: 'https://handbrake.fr/',
-      description: 'Free desktop tool to reduce video file size',
-    },
-    {
-      name: 'FFmpeg docs',
-      url: 'https://ffmpeg.org/documentation.html',
-      description: 'Command-line compression and format conversion',
+      name: 'Gemini',
+      url: 'https://gemini.google.com/',
+      description: 'Gemini natively supports video input — use it for better results',
     },
   ],
   audio: [
     {
-      name: 'Audacity',
-      url: 'https://www.audacityteam.org/',
-      description: 'Trim and export smaller audio clips locally',
+      name: 'Gemini',
+      url: 'https://gemini.google.com/',
+      description: 'Gemini natively supports audio input — use it for better results',
     },
   ],
   pdf: [
     {
-      name: 'Adobe Acrobat compress',
+      name: 'Adobe Acrobat',
       url: 'https://www.adobe.com/acrobat/online/compress-pdf.html',
       description: 'Reduce PDF size before uploading (opens in browser)',
+    },
+    {
+      name: 'iLovePDF',
+      url: 'https://www.ilovepdf.com/compress_pdf',
+      description: 'Free online PDF compressor',
     },
   ],
   spreadsheet: [
     {
-      name: 'Export CSV subset',
-      url: 'https://support.microsoft.com/en-us/office/save-a-workbook-in-another-file-format-5c7c4d5f-8c8e-4d5a-9c8e-4d5a9c8e4d5a',
-      description: 'Export only needed sheets/columns instead of full workbook',
+      name: 'Export CSV',
+      url: '',
+      description: 'Chat models can read CSV. Export only needed columns to cut tokens',
     },
   ],
   document: [
     {
       name: 'Paste sections only',
-      url: 'https://support.microsoft.com/en-us/office/copy-document-contents-into-another-document-97c79e41-8cee-4b7c-b5c3-5c3b5c3b5c3b',
-      description: 'Copy only relevant sections instead of the full document',
+      url: '',
+      description: 'Copy only the section you need, or convert to plain text for fewer tokens',
     },
   ],
   presentation: [
     {
       name: 'Export outline',
-      url: 'https://support.microsoft.com/en-us/office/export-a-presentation-as-a-word-document-9a5c3b7e-8c8e-4d5a-9c8e-4d5a9c8e4d5a',
-      description: 'Export slide outline as text instead of uploading the full deck',
+      url: '',
+      description: 'Export speaker notes or bullet outline as text instead of the full deck',
     },
   ],
   archive: [
@@ -92,8 +98,8 @@ const RESOURCES: Record<CompressionCategory, CompressionResource[]> = {
   ],
   text: [
     {
-      name: 'Paste relevant excerpt',
-      url: 'https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API',
+      name: 'Paste excerpt',
+      url: '',
       description: 'Paste only the lines you need instead of the full file',
     },
   ],
@@ -123,11 +129,12 @@ export function getCompressionResources(
 }
 
 /**
- * Open a compression resource URL in a new window (user-initiated only).
+ * Open a handling-resource URL in a new window (user-initiated only).
+ * Advice-only resources (empty url) are a no-op.
  */
 export function openCompressionResource(url: string): void {
+  if (!url || !url.startsWith('https://')) return;
   try {
-    if (!url.startsWith('https://')) return;
     chrome.windows.create({ url, type: 'normal', width: 1100, height: 800 });
   } catch {
     try {

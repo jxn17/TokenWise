@@ -13,6 +13,7 @@ import { estimateFileTokens, detectURLs, generateFileTooltip, type FileEstimate 
 import { reportError } from '../utils/error-reporter';
 import { detectAttachments, type AttachmentConfig } from '../utils/attachment-detector';
 import { createGhostTextController, type GhostTextController } from '../utils/ghost-text-ui';
+import { createEducationPanelController, type EducationPanelController } from '../utils/token-education';
 import {
   SITE_CONFIGS,
   createDebouncedObserver,
@@ -36,6 +37,7 @@ import {
   let chatObserver: DebouncedObserver | null = null;
   let widgetElement: HTMLElement | null = null;
   let suggestionPanel: SuggestionPanelController | null = null;
+  let educationPanel: EducationPanelController | null = null;
   let ghostText: GhostTextController | null = null;
   let currentAttachments: FileEstimate[] = [];
   let currentInputTokens = 0;
@@ -65,6 +67,7 @@ import {
       if (showSuggestions) {
         initSuggestionPanel();
       }
+      initEducationPanel();
       initGhostText();
 
       // Wait for input element with error handling
@@ -167,6 +170,64 @@ import {
       hideWidget();
     });
     widgetElement.appendChild(dismissBtn);
+
+    // 💡 Tips toggle — re-opens the suggestion panel after dismissal
+    const tipsBtn = document.createElement('button');
+    tipsBtn.id = 'tokenwise-opentips-btn';
+    tipsBtn.textContent = '💡';
+    tipsBtn.title = 'Show optimization tips';
+    Object.assign(tipsBtn.style, {
+      position: 'absolute',
+      top: '4px',
+      right: '28px',
+      background: 'none',
+      border: 'none',
+      color: '#888',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      lineHeight: '1',
+    });
+    tipsBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    tipsBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      if (suggestionPanel) {
+        const inputEl = safeQuerySelector(CONFIG.inputSelector);
+        const text = inputEl ? getInputText(inputEl) : '';
+        suggestionPanel.forceShow(text, currentAttachments);
+      }
+    });
+    widgetElement.appendChild(tipsBtn);
+
+    // 📚 Education toggle — opens the token facts panel
+    const eduBtn = document.createElement('button');
+    eduBtn.id = 'tokenwise-education-btn';
+    eduBtn.textContent = '📚';
+    eduBtn.title = 'Token facts & education';
+    Object.assign(eduBtn.style, {
+      position: 'absolute',
+      top: '4px',
+      right: '48px',
+      background: 'none',
+      border: 'none',
+      color: '#888',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 4px',
+      lineHeight: '1',
+    });
+    eduBtn.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    eduBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      if (educationPanel) {
+        if (educationPanel.isVisible()) {
+          educationPanel.hide();
+        } else {
+          educationPanel.show('chatgpt');
+        }
+      }
+    });
+    widgetElement.appendChild(eduBtn);
 
     // Drag functionality
     widgetElement.addEventListener('mousedown', startDrag);
@@ -305,6 +366,14 @@ import {
     if (showSuggestions) {
       suggestionPanel.create();
     }
+  }
+
+  // ── Education Panel ────────────────────────────────────────────
+
+  function initEducationPanel(): void {
+    if (educationPanel) return;
+    educationPanel = createEducationPanelController();
+    educationPanel.create();
   }
 
   // ── Ghost Text Rewriter ───────────────────────────────────────

@@ -60,7 +60,11 @@ export const SITE_CONFIGS: Record<SiteName, SiteConfig> = {
     userRole: 'user',
     shadowDom: true,
     chatContainerSelector: '.conversation-container, [class*="conversation"]',
-    // Use only specific chip selectors to avoid matching the entire message or UI elements.
+    // Gemini uses custom elements for file chips in the composer.
+    // <uploader-file-preview> is the outermost chip; inner elements include
+    // <gem-media-attachment>, .file-preview-chip, .file-preview-container,
+    // and .gem-attachment-tile.  The dedup logic in gemini.ts keeps only the
+    // outermost element per chain, so listing them all here is safe.
     fileAttachmentSelector: 'uploader-file-preview, gem-media-attachment, .file-preview-chip, .file-preview-container, .gem-attachment-tile',
     hostname: 'gemini.google.com',
   },
@@ -489,6 +493,56 @@ function isClaudeUserMessage(el: Element): boolean {
 }
 
 /**
+ * Extract rich text content from a Claude message element.
+ * Unlike plain textContent, this preserves code block content by extracting
+ * the full text of <pre> elements (which contain <code> blocks) and includes
+ * artifact/canvas content containers.
+ */
+function extractRichContent(el: Element): string {
+  const parts: string[] = [];
+
+  // Walk child nodes in order; for <pre> blocks emit their full text
+  // (which includes the code inside <code>), for other nodes use textContent.
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node): number {
+      // If we hit a <pre>, accept it so we grab it whole (skip its subtree later)
+      if (node instanceof HTMLElement && node.tagName === 'PRE') {
+        return NodeFilter.FILTER_ACCEPT;
+      }
+      // Skip children of <pre> — we already grabbed the parent
+      if (node.parentElement?.closest('pre')) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      // Accept text nodes
+      if (node.nodeType === Node.TEXT_NODE) {
+        return NodeFilter.FILTER_ACCEPT;
+      }
+      // For elements, just continue into children (don't emit the element itself)
+      return NodeFilter.FILTER_SKIP;
+    },
+  });
+
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (node instanceof HTMLElement && node.tagName === 'PRE') {
+      // Emit a fenced code block representation to capture full token cost
+      const codeEl = node.querySelector('code');
+      const codeText = (codeEl || node).textContent || '';
+      if (codeText.trim()) {
+        parts.push('\n```\n' + codeText + '\n```\n');
+      }
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      if (text.trim()) {
+        parts.push(text);
+      }
+    }
+  }
+
+  return parts.join('').replace(/\u200b/g, '').trim();
+}
+
+/**
  * Extract Claude messages using current Anthropic DOM patterns.
  */
 export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; content: string }> {
@@ -509,7 +563,7 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
         return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
       });
       for (const { el, role } of all) {
-        const content = el.textContent?.trim() || '';
+        const content = extractRichContent(el);
         if (!content) continue;
         messages.push({ role, content });
       }
@@ -523,7 +577,7 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
     const ordered = sortByDocumentOrder(candidates);
 
     for (const el of ordered) {
-      const content = el.textContent?.trim() || '';
+      const content = extractRichContent(el);
       if (!content) continue;
 
       messages.push({
@@ -532,21 +586,29 @@ export function extractClaudeMessages(): Array<{ role: 'user' | 'assistant'; con
       });
     }
 
-    // Strategy 3: recover .standard-markdown blocks that are siblings (not children)
-    // of the captured elements.  Claude wraps some rich-formatted content
-    // (tables, annotated code sections, step-by-step explanations) in
-    // .standard-markdown divs that live *outside* .font-claude-response in the DOM.
-    // Without this pass, those blocks are silently skipped and their tokens are lost.
+    // Strategy 3: recover .standard-markdown blocks AND artifact/code-block
+    // containers that live *outside* .font-claude-response in the DOM.
+    // Claude renders some rich content — tables, annotated code sections,
+    // step-by-step explanations, and artifact code panels — in separate
+    // DOM subtrees. Without this pass their tokens are silently lost.
     try {
       const capturedEls = Array.from(document.querySelectorAll(selector));
-      const markdownEls = Array.from(document.querySelectorAll('.standard-markdown'));
 
-      for (const mdEl of markdownEls) {
+      // Selectors for content blocks that may sit outside the response wrapper:
+      //   .standard-markdown   — rich formatted prose / tables / explanations
+      //   [data-testid*="code"] — Claude code block containers
+      //   .artifact-renderer    — artifact / canvas rendered content
+      //   .contents              — generic Claude content wrapper
+      const extraSelector =
+        '.standard-markdown, [data-testid*="code-block"], .artifact-renderer, .code-block-content';
+      const extraEls = Array.from(document.querySelectorAll(extraSelector));
+
+      for (const extraEl of extraEls) {
         // Skip if already contained inside a captured element (already counted)
-        const alreadyCaptured = capturedEls.some(captured => captured.contains(mdEl));
+        const alreadyCaptured = capturedEls.some(captured => captured.contains(extraEl));
         if (alreadyCaptured) continue;
 
-        const content = mdEl.textContent?.trim() || '';
+        const content = extractRichContent(extraEl);
         if (!content) continue;
 
         // Append to the last assistant message if one exists, otherwise push new
